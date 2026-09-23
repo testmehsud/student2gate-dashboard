@@ -30,25 +30,42 @@ export default function LoginPage() {
     try {
       await useEphemeralAuthPersistence();
 
-      const csrfResponse = await fetch('/api/auth/csrf', {
-        method: 'GET',
-        credentials: 'same-origin',
-        cache: 'no-store',
-      });
+      /*
+       * Start CSRF retrieval and Firebase sign-in at the same time.
+       * They are independent operations, so this avoids unnecessary
+       * sequential waiting.
+       */
+      const [csrfResponse, credential] = await Promise.all([
+        fetch('/api/auth/csrf', {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: 'no-store',
+        }),
+        signInWithEmailAndPassword(
+          firebaseAuth,
+          email.trim(),
+          password,
+        ),
+      ]);
 
-      const csrfResult = await csrfResponse.json();
+      const csrfResult = await csrfResponse
+        .json()
+        .catch(() => null);
 
-      if (!csrfResponse.ok || typeof csrfResult.token !== 'string') {
-        throw new Error('Unable to start secure login.');
+      if (
+        !csrfResponse.ok ||
+        typeof csrfResult?.token !== 'string'
+      ) {
+        throw new Error(
+          'Unable to start secure login.',
+        );
       }
 
-      const credential = await signInWithEmailAndPassword(
-        firebaseAuth,
-        email.trim(),
-        password,
-      );
-
-      const idToken = await credential.user.getIdToken(true);
+      /*
+       * The sign-in just happened, so there is no need to force
+       * another Firebase token refresh here.
+       */
+      const idToken = await credential.user.getIdToken();
 
       const sessionResponse = await fetch(
         '/api/auth/session',
@@ -77,6 +94,11 @@ export default function LoginPage() {
         );
       }
 
+      /*
+       * The browser no longer needs Firebase's client-side
+       * authenticated state because the server session cookie
+       * is now authoritative.
+       */
       await signOut(firebaseAuth);
 
       router.replace('/dashboard');
@@ -89,9 +111,13 @@ export default function LoginPage() {
       }
 
       const message =
-        err instanceof Error ? err.message : 'Login failed.';
+        err instanceof Error
+          ? err.message
+          : 'Login failed.';
 
-      if (message.includes('auth/invalid-credential')) {
+      if (
+        message.includes('auth/invalid-credential')
+      ) {
         setError('Invalid email or password.');
       } else if (
         message.includes('auth/too-many-requests')
