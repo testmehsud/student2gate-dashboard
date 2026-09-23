@@ -132,18 +132,7 @@ export async function POST(request: NextRequest) {
     );
 
     return response;
-  } catch (error) {
-    console.error(
-      'PLATFORM AUTH SESSION ERROR:',
-      error instanceof Error
-        ? {
-            name: error.name,
-            message: error.message,
-            stack: error.stack,
-          }
-        : error,
-    );
-
+    } catch {
     return NextResponse.json(
       { error: 'Authentication failed.' },
       { status: 401 },
