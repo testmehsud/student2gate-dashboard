@@ -15,6 +15,49 @@ import {
 
 let adminApp: App | undefined;
 
+type FirebaseServiceAccount = {
+  project_id?: string;
+  client_email?: string;
+  private_key?: string;
+};
+
+function parseServiceAccount(): FirebaseServiceAccount {
+  const encoded =
+    process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+
+  if (encoded) {
+    try {
+      const decoded = Buffer.from(
+        encoded.trim(),
+        'base64',
+      ).toString('utf8');
+
+      return JSON.parse(decoded) as FirebaseServiceAccount;
+    } catch {
+      throw new Error(
+        'FIREBASE_SERVICE_ACCOUNT_BASE64 is not valid Base64-encoded JSON.',
+      );
+    }
+  }
+
+  const rawJson =
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+  if (rawJson) {
+    try {
+      return JSON.parse(rawJson) as FirebaseServiceAccount;
+    } catch {
+      throw new Error(
+        'FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON.',
+      );
+    }
+  }
+
+  throw new Error(
+    'Firebase service-account credentials are not configured.',
+  );
+}
+
 function getFirebaseAdminApp(): App {
   if (adminApp) {
     return adminApp;
@@ -27,28 +70,7 @@ function getFirebaseAdminApp(): App {
     return adminApp;
   }
 
-  const rawServiceAccount =
-    process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-
-  if (!rawServiceAccount) {
-    throw new Error(
-      'FIREBASE_SERVICE_ACCOUNT_JSON is not configured.',
-    );
-  }
-
-  let serviceAccount: {
-    project_id?: string;
-    client_email?: string;
-    private_key?: string;
-  };
-
-  try {
-    serviceAccount = JSON.parse(rawServiceAccount);
-  } catch {
-    throw new Error(
-      'FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON.',
-    );
-  }
+  const serviceAccount = parseServiceAccount();
 
   if (
     !serviceAccount.project_id ||
