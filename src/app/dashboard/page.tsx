@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import { useRouter } from 'next/navigation';
+import ManageSchoolModal from './components/manage-school-modal';
 
 type Section =
   | 'Overview'
@@ -72,10 +73,10 @@ const demoSchools: DemoSchool[] = [
 ];
 
 const navItems: { label: Section; icon: string }[] = [
-  { label: 'Overview', icon: '⌂' },
-  { label: 'Schools', icon: '▦' },
-  { label: 'School Admins', icon: '♙' },
-  { label: 'Audit Log', icon: '◷' },
+  { label: 'Overview', icon: 'âŒ‚' },
+  { label: 'Schools', icon: 'â–¦' },
+  { label: 'School Admins', icon: 'â™™' },
+  { label: 'Audit Log', icon: 'â—·' },
 ];
 
 export default function Home() {
@@ -101,6 +102,9 @@ export default function Home() {
 
   const [schoolModalOpen, setSchoolModalOpen] =
     useState(false);
+
+  const [selectedSchool, setSelectedSchool] =
+    useState<LiveSchool | null>(null);
 
   const activeDemoSchools = useMemo(
     () =>
@@ -324,7 +328,7 @@ export default function Home() {
                 setMobileOpen(true)
               }
             >
-              ☰
+              â˜°
             </button>
 
             <div>
@@ -341,7 +345,7 @@ export default function Home() {
               className="icon-button"
               aria-label="Notifications"
             >
-              ◔
+              â—”
             </button>
 
             <div className="status-chip">
@@ -372,6 +376,9 @@ export default function Home() {
             onCreate={() =>
               setSchoolModalOpen(true)
             }
+            onManage={(school) =>
+              setSelectedSchool(school)
+            }
           />
         )}
 
@@ -386,6 +393,22 @@ export default function Home() {
         )}
       </section>
 
+      {selectedSchool && (
+        <ManageSchoolModal
+          school={selectedSchool}
+          onClose={() => setSelectedSchool(null)}
+          onUpdated={(school) => {
+            setLiveSchools((current) =>
+              school.status === 'ARCHIVED'
+                ? current.filter((item) => item.schoolId !== school.schoolId)
+                : current.map((item) =>
+                    item.schoolId === school.schoolId ? school : item,
+                  ),
+            );
+            setSelectedSchool(null);
+          }}
+        />
+      )}
       {schoolModalOpen && (
         <CreateSchoolModal
           onClose={() =>
@@ -474,28 +497,28 @@ function Overview({
           label="Active schools"
           value={String(activeSchools)}
           detail="Across the platform"
-          icon="▦"
+          icon="â–¦"
         />
 
         <StatCard
           label="School Admins"
           value="4"
-          detail="3 active · 1 inactive"
-          icon="♙"
+          detail="3 active Â· 1 inactive"
+          icon="â™™"
         />
 
         <StatCard
           label="Students"
           value={totalStudents.toLocaleString()}
           detail="Across active schools"
-          icon="◉"
+          icon="â—‰"
         />
 
         <StatCard
           label="Actions today"
           value="18"
           detail="Admin activity events"
-          icon="↗"
+          icon="â†—"
         />
       </section>
 
@@ -587,26 +610,26 @@ function Overview({
           <div className="activity-list">
             <ActivityItem
               title="School Admin provisioned"
-              target="Demo School · 2 min ago"
+              target="Demo School Â· 2 min ago"
               icon="+"
             />
 
             <ActivityItem
               title="School status updated"
-              target="Green Valley School · 21 min ago"
-              icon="↻"
+              target="Green Valley School Â· 21 min ago"
+              icon="â†»"
             />
 
             <ActivityItem
               title="Password reset initiated"
-              target="Demo School · 48 min ago"
-              icon="↺"
+              target="Demo School Â· 48 min ago"
+              icon="â†º"
             />
 
             <ActivityItem
               title="School Admin deactivated"
-              target="City Public School · 1 hr ago"
-              icon="−"
+              target="City Public School Â· 1 hr ago"
+              icon="âˆ’"
             />
           </div>
         </div>
@@ -621,12 +644,14 @@ function Schools({
   error,
   onRefresh,
   onCreate,
+  onManage,
 }: {
   schools: LiveSchool[];
   loading: boolean;
   error: string;
   onRefresh: () => Promise<void>;
   onCreate: () => void;
+  onManage: (school: LiveSchool) => void;
 }) {
   return (
     <div className="page-stack">
@@ -681,12 +706,12 @@ function Schools({
         <div className="toolbar">
           <input
             className="search-input"
-            placeholder="Search schools…"
+            placeholder="Search schoolsâ€¦"
             aria-label="Search schools"
           />
 
           <button className="filter-button">
-            All statuses ▾
+            All statuses â–¾
           </button>
         </div>
 
@@ -707,7 +732,7 @@ function Schools({
               {loading && (
                 <tr>
                   <td colSpan={6}>
-                    Loading schools…
+                    Loading schoolsâ€¦
                   </td>
                 </tr>
               )}
@@ -744,7 +769,7 @@ function Schools({
                         <div className="table-secondary">
                           {school.city ||
                             'No city metadata'}
-                          {' · '}
+                          {' Â· '}
                           {school.schoolId}
                         </div>
                       </td>
@@ -759,17 +784,17 @@ function Schools({
 
                       <td>
                         {school.timezone ||
-                          '—'}
+                          'â€”'}
                       </td>
 
                       <td>
                         {school
                           .pickupRadiusMeters ??
-                          '—'}
-                        m ·{' '}
+                          'â€”'}
+                        m Â·{' '}
                         {school
                           .pickupRequestLifetimeMinutes ??
-                          '—'}
+                          'â€”'}
                         min
                       </td>
 
@@ -780,7 +805,8 @@ function Schools({
                       </td>
 
                       <td>
-                        <button className="row-action">
+                        <button className="row-action"
+                          onClick={() => onManage(school)}>
                           Manage
                         </button>
                       </td>
@@ -1015,7 +1041,7 @@ function CreateSchoolModal({
             className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100"
             aria-label="Close"
           >
-            ×
+            Ã—
           </button>
         </div>
 
@@ -1288,7 +1314,7 @@ function CreateSchoolModal({
               className="primary-button"
             >
               {busy
-                ? 'Creating…'
+                ? 'Creatingâ€¦'
                 : 'Create school'}
             </button>
           </div>
@@ -2184,7 +2210,7 @@ function AuditRow({
         <strong>{action}</strong>
 
         <span>
-          {actor} → {target}
+          {actor} â†’ {target}
         </span>
       </div>
 

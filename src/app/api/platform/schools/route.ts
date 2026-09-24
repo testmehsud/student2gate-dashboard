@@ -185,6 +185,7 @@ export async function GET() {
       .get();
 
     const schools = snapshot.docs
+      .filter((doc) => doc.data()?.status !== 'ARCHIVED')
       .map(serializeSchool)
       .sort((a, b) =>
         a.name.localeCompare(b.name),
