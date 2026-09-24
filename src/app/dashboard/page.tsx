@@ -9,7 +9,7 @@ import {
 } from 'react';
 import { useRouter } from 'next/navigation';
 import ManageSchoolModal from './components/manage-school-modal';
-
+import ManageSchoolAdminModal from './components/manage-school-admin-modal';
 type Section =
   | 'Overview'
   | 'Schools'
@@ -1359,6 +1359,9 @@ function SchoolAdmins({
   const [modalOpen, setModalOpen] =
     useState(false);
 
+  const [selectedAdmin, setSelectedAdmin] =
+    useState<LiveAdmin | null>(null);
+
   const [search, setSearch] =
     useState('');
 
@@ -1634,13 +1637,14 @@ function SchoolAdmins({
                 <th>School</th>
                 <th>Status</th>
                 <th>Role</th>
+                <th>Action</th>
               </tr>
             </thead>
 
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={4}>
+                  <td colSpan={5}>
                     Loading School Admins
                   </td>
                 </tr>
@@ -1650,7 +1654,7 @@ function SchoolAdmins({
                 filteredAdmins.length ===
                   0 && (
                   <tr>
-                    <td colSpan={4}>
+                    <td colSpan={5}>
                       No School Admins match
                       the current filters.
                     </td>
@@ -1698,6 +1702,17 @@ function SchoolAdmins({
                       <td>
                         {admin.role}
                       </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() =>
+                            setSelectedAdmin(admin)
+                          }
+                        >
+                          Manage
+                        </button>
+                      </td>
                     </tr>
                   ),
                 )}
@@ -1731,6 +1746,40 @@ function SchoolAdmins({
             );
 
             setModalOpen(false);
+          }}
+        />
+      )}
+      {selectedAdmin && (
+        <ManageSchoolAdminModal
+          admin={selectedAdmin}
+          onClose={() =>
+            setSelectedAdmin(null)
+          }
+          onUpdated={(updatedAdmin) => {
+            if (
+              updatedAdmin.status ===
+              'ARCHIVED'
+            ) {
+              setAdmins((current) =>
+                current.filter(
+                  (admin) =>
+                    admin.uid !==
+                    updatedAdmin.uid,
+                ),
+              );
+            } else {
+              setAdmins((current) =>
+                current.map(
+                  (admin) =>
+                    admin.uid ===
+                    updatedAdmin.uid
+                      ? updatedAdmin
+                      : admin,
+                ),
+              );
+            }
+
+            setSelectedAdmin(null);
           }}
         />
       )}

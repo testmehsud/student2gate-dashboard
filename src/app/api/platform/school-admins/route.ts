@@ -1,17 +1,31 @@
 import crypto from 'node:crypto';
+
 import { NextRequest, NextResponse } from 'next/server';
+
 import { FieldValue } from 'firebase-admin/firestore';
 
-import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin';
+import {
+  getAdminAuth,
+  getAdminDb,
+} from '@/lib/firebase-admin';
+
 import { requirePlatformAdmin } from '@/lib/platform-auth';
 
 const CSRF_COOKIE = 's2g_csrf';
 
 const MIN_NAME_LENGTH = 2;
 const MAX_NAME_LENGTH = 120;
+
 const MAX_EMAIL_LENGTH = 320;
+
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 128;
+
+const VALID_STATUS = new Set([
+  'ACTIVE',
+  'INACTIVE',
+  'ARCHIVED',
+]);
 
 function json(
   body: unknown,
@@ -30,6 +44,7 @@ function validOrigin(
 ): boolean {
   const expected =
     process.env.DASHBOARD_ORIGIN;
+
   const origin =
     request.headers.get('origin');
 
@@ -96,20 +111,25 @@ function serializeAdmin(
   return {
     uid: snapshot.id,
     schoolId,
+
     schoolName:
       schoolNames.get(schoolId) ?? '',
+
     name:
       typeof data.name === 'string'
         ? data.name
         : '',
+
     email:
       typeof data.email === 'string'
         ? data.email
         : '',
+
     role:
       typeof data.role === 'string'
         ? data.role
         : '',
+
     status:
       typeof data.status === 'string'
         ? data.status
@@ -123,6 +143,75 @@ async function getAuthorizedPlatformAdmin() {
   } catch {
     return null;
   }
+}
+
+async function loadSchoolAdmin(
+  uid: string,
+) {
+  const db = getAdminDb();
+
+  const userRef =
+    db.collection('users').doc(uid);
+
+  const snapshot =
+    await userRef.get();
+
+  if (!snapshot.exists) {
+    return null;
+  }
+
+  const data =
+    snapshot.data() ?? {};
+
+  if (
+    data.role !==
+    'SCHOOL_ADMIN'
+  ) {
+    return null;
+  }
+
+  return {
+    db,
+    userRef,
+    data,
+  };
+}
+
+function buildAdminResponse(
+  uid: string,
+  data: FirebaseFirestore.DocumentData,
+  schoolName: string,
+) {
+  return {
+    uid,
+
+    schoolId:
+      typeof data.schoolId === 'string'
+        ? data.schoolId
+        : '',
+
+    schoolName,
+
+    name:
+      typeof data.name === 'string'
+        ? data.name
+        : '',
+
+    email:
+      typeof data.email === 'string'
+        ? data.email
+        : '',
+
+    role:
+      typeof data.role === 'string'
+        ? data.role
+        : 'SCHOOL_ADMIN',
+
+    status:
+      typeof data.status === 'string'
+        ? data.status
+        : '',
+  };
 }
 
 export async function GET() {
@@ -146,7 +235,10 @@ export async function GET() {
       schoolSnapshot,
       adminSnapshot,
     ] = await Promise.all([
-      db.collection('schools').get(),
+      db
+        .collection('schools')
+        .get(),
+
       db
         .collection('users')
         .where(
@@ -270,7 +362,8 @@ export async function POST(
         .toLowerCase();
 
     const password =
-      typeof body?.password === 'string'
+      typeof body?.password ===
+      'string'
         ? body.password
         : '';
 
@@ -352,8 +445,10 @@ export async function POST(
     }
 
     const db = getAdminDb();
+
     const schoolRef =
-      db.collection('schools')
+      db
+        .collection('schools')
         .doc(schoolId);
 
     const schoolSnapshot =
@@ -405,7 +500,8 @@ export async function POST(
         created.uid;
 
       const userRef =
-        db.collection('users')
+        db
+          .collection('users')
           .doc(createdUid);
 
       const auditRef =
@@ -423,13 +519,18 @@ export async function POST(
             existingUser,
             currentSchool,
           ] = await Promise.all([
-            transaction.get(userRef),
+            transaction.get(
+              userRef,
+            ),
+
             transaction.get(
               schoolRef,
             ),
           ]);
 
-          if (existingUser.exists) {
+          if (
+            existingUser.exists
+          ) {
             throw new Error(
               'USER_PROFILE_ALREADY_EXISTS',
             );
@@ -454,10 +555,13 @@ export async function POST(
               name,
               email,
               status: 'ACTIVE',
+
               createdByUid:
                 admin.uid,
+
               createdAt:
                 FieldValue.serverTimestamp(),
+
               updatedAt:
                 FieldValue.serverTimestamp(),
             },
@@ -466,18 +570,26 @@ export async function POST(
           transaction.create(
             auditRef,
             {
-              actorUid: admin.uid,
+              actorUid:
+                admin.uid,
+
               actorEmail:
                 admin.email,
+
               actorName:
                 admin.name,
+
               eventType:
                 'PLATFORM_SCHOOL_ADMIN_CREATED',
+
               targetType:
                 'USER',
+
               targetId:
                 createdUid,
+
               schoolId,
+
               createdAt:
                 FieldValue.serverTimestamp(),
             },
@@ -598,6 +710,7 @@ export async function POST(
     return json(
       {
         ok: true,
+
         admin: {
           uid: createdUid,
           schoolId,
@@ -613,8 +726,7 @@ export async function POST(
     );
   } catch (error) {
     if (
-      error instanceof
-      SyntaxError
+      error instanceof SyntaxError
     ) {
       return json(
         {
@@ -629,6 +741,677 @@ export async function POST(
       {
         error:
           'Unable to create School Admin.',
+      },
+      500,
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+) {
+  const admin =
+    await getAuthorizedPlatformAdmin();
+
+  if (!admin) {
+    return json(
+      {
+        error:
+          'Platform Owner access required.',
+      },
+      401,
+    );
+  }
+
+  if (!validOrigin(request)) {
+    return json(
+      {
+        error:
+          'Invalid request origin.',
+      },
+      403,
+    );
+  }
+
+  try {
+    const body =
+      await request.json();
+
+    if (
+      !validCsrf(
+        request,
+        body?.csrfToken,
+      )
+    ) {
+      return json(
+        {
+          error:
+            'Invalid CSRF token.',
+        },
+        403,
+      );
+    }
+
+    const uid =
+      stringOrEmpty(
+        body?.uid,
+      );
+
+    if (
+      uid.length < 1 ||
+      uid.length > 128
+    ) {
+      return json(
+        {
+          error:
+            'A valid School Admin is required.',
+        },
+        400,
+      );
+    }
+
+    const action =
+      typeof body?.action ===
+      'string'
+        ? body.action
+            .trim()
+            .toLowerCase()
+        : '';
+
+    const allowedActions =
+      new Set([
+        'deactivate',
+        'reactivate',
+        'archive',
+        'reset_password',
+      ]);
+
+    if (
+      !allowedActions.has(action)
+    ) {
+      return json(
+        {
+          error:
+            'invalid_action',
+          message:
+            'Use deactivate, reactivate, archive, or reset_password.',
+        },
+        400,
+      );
+    }
+
+    const loaded =
+      await loadSchoolAdmin(uid);
+
+    if (!loaded) {
+      return json(
+        {
+          error:
+            'school_admin_not_found',
+          message:
+            'The selected School Admin does not exist.',
+        },
+        404,
+      );
+    }
+
+    const {
+      db,
+      userRef,
+      data,
+    } = loaded;
+
+    const currentStatus =
+      typeof data.status ===
+      'string'
+        ? data.status
+        : '';
+
+    if (
+      !VALID_STATUS.has(
+        currentStatus,
+      )
+    ) {
+      return json(
+        {
+          error:
+            'invalid_school_admin_status',
+          message:
+            `School Admin has unsupported status "${currentStatus}".`,
+        },
+        409,
+      );
+    }
+
+    if (
+      currentStatus ===
+      'ARCHIVED'
+    ) {
+      return json(
+        {
+          error:
+            'school_admin_archived',
+          message:
+            'Archived School Admins cannot be changed.',
+        },
+        409,
+      );
+    }
+
+    const schoolId =
+      typeof data.schoolId ===
+      'string'
+        ? data.schoolId
+        : '';
+
+    if (!schoolId) {
+      return json(
+        {
+          error:
+            'school_missing',
+          message:
+            'The School Admin is not linked to a school.',
+        },
+        409,
+      );
+    }
+
+    const schoolRef =
+      db
+        .collection('schools')
+        .doc(schoolId);
+
+    const schoolSnapshot =
+      await schoolRef.get();
+
+    if (!schoolSnapshot.exists) {
+      return json(
+        {
+          error:
+            'school_not_found',
+          message:
+            'The School Admin school does not exist.',
+        },
+        404,
+      );
+    }
+
+    const schoolData =
+      schoolSnapshot.data() ?? {};
+
+    const schoolName =
+      typeof schoolData.name ===
+      'string'
+        ? schoolData.name
+        : '';
+
+    const firebaseAuth =
+      getAdminAuth();
+
+    if (
+      action ===
+      'reset_password'
+    ) {
+      const password =
+        typeof body?.password ===
+        'string'
+          ? body.password
+          : '';
+
+      const confirmPassword =
+        typeof body?.confirmPassword ===
+        'string'
+          ? body.confirmPassword
+          : '';
+
+      if (
+        password.length <
+          MIN_PASSWORD_LENGTH ||
+        password.length >
+          MAX_PASSWORD_LENGTH
+      ) {
+        return json(
+          {
+            error:
+              'invalid_password',
+            message:
+              `Password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`,
+          },
+          400,
+        );
+      }
+
+      if (
+        password !==
+        confirmPassword
+      ) {
+        return json(
+          {
+            error:
+              'password_mismatch',
+            message:
+              'Password and confirmation must match.',
+          },
+          400,
+        );
+      }
+
+      try {
+        await firebaseAuth.updateUser(
+          uid,
+          {
+            password,
+          },
+        );
+      } catch (error) {
+        const code =
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error
+            ? String(
+                (
+                  error as {
+                    code?: unknown;
+                  }
+                ).code ?? '',
+              )
+            : '';
+
+        if (
+          code ===
+          'auth/user-not-found'
+        ) {
+          return json(
+            {
+              error:
+                'firebase_user_not_found',
+              message:
+                'The Firebase account for this School Admin does not exist.',
+            },
+            404,
+          );
+        }
+
+        if (
+          code ===
+          'auth/invalid-password'
+        ) {
+          return json(
+            {
+              error:
+                'invalid_password',
+              message:
+                `Password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`,
+            },
+            400,
+          );
+        }
+
+        throw error;
+      }
+
+      const auditRef =
+        db
+          .collection(
+            'platformAuditLog',
+          )
+          .doc(
+            crypto.randomUUID(),
+          );
+
+      try {
+        await db.runTransaction(
+          async (transaction) => {
+            const current =
+              await transaction.get(
+                userRef,
+              );
+
+            if (!current.exists) {
+              throw new Error(
+                'ADMIN_NOT_FOUND_AFTER_PASSWORD_RESET',
+              );
+            }
+
+            transaction.update(
+              userRef,
+              {
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+            );
+
+            transaction.create(
+              auditRef,
+              {
+                actorUid:
+                  admin.uid,
+
+                actorEmail:
+                  admin.email,
+
+                actorName:
+                  admin.name,
+
+                eventType:
+                  'PLATFORM_SCHOOL_ADMIN_PASSWORD_RESET',
+
+                targetType:
+                  'USER',
+
+                targetId:
+                  uid,
+
+                schoolId,
+
+                createdAt:
+                  FieldValue.serverTimestamp(),
+              },
+            );
+          },
+        );
+      } catch (error) {
+        throw error;
+      }
+
+      return json({
+        ok: true,
+        action,
+        admin:
+          buildAdminResponse(
+            uid,
+            data,
+            schoolName,
+          ),
+      });
+    }
+
+    let nextStatus =
+      currentStatus;
+
+    let eventType =
+      '';
+
+    let firebaseDisabled =
+      false;
+
+    if (
+      action ===
+      'deactivate'
+    ) {
+      if (
+        currentStatus ===
+        'INACTIVE'
+      ) {
+        return json(
+          {
+            error:
+              'school_admin_already_inactive',
+            message:
+              'The School Admin is already inactive.',
+          },
+          409,
+        );
+      }
+
+      nextStatus =
+        'INACTIVE';
+
+      eventType =
+        'PLATFORM_SCHOOL_ADMIN_DEACTIVATED';
+
+      firebaseDisabled =
+        true;
+    } else if (
+      action ===
+      'reactivate'
+    ) {
+      if (
+        currentStatus ===
+        'ACTIVE'
+      ) {
+        return json(
+          {
+            error:
+              'school_admin_already_active',
+            message:
+              'The School Admin is already active.',
+          },
+          409,
+        );
+      }
+
+      if (
+        schoolData.status !==
+        'ACTIVE'
+      ) {
+        return json(
+          {
+            error:
+              'school_not_active',
+            message:
+              'A School Admin cannot be reactivated while the school is not active.',
+          },
+          409,
+        );
+      }
+
+      nextStatus =
+        'ACTIVE';
+
+      eventType =
+        'PLATFORM_SCHOOL_ADMIN_REACTIVATED';
+
+      firebaseDisabled =
+        false;
+    } else {
+      nextStatus =
+        'ARCHIVED';
+
+      eventType =
+        'PLATFORM_SCHOOL_ADMIN_ARCHIVED';
+
+      firebaseDisabled =
+        true;
+    }
+
+    const authUser =
+      await firebaseAuth.getUser(
+        uid,
+      );
+
+    const previousDisabled =
+      authUser.disabled;
+
+    try {
+      await firebaseAuth.updateUser(
+        uid,
+        {
+          disabled:
+            firebaseDisabled,
+        },
+      );
+
+      const auditRef =
+        db
+          .collection(
+            'platformAuditLog',
+          )
+          .doc(
+            crypto.randomUUID(),
+          );
+
+      await db.runTransaction(
+        async (transaction) => {
+          const current =
+            await transaction.get(
+              userRef,
+            );
+
+          if (!current.exists) {
+            throw new Error(
+              'ADMIN_NOT_FOUND',
+            );
+          }
+
+          const currentData =
+            current.data() ?? {};
+
+          if (
+            currentData.role !==
+            'SCHOOL_ADMIN'
+          ) {
+            throw new Error(
+              'INVALID_ADMIN_ROLE',
+            );
+          }
+
+          if (
+            currentData.status ===
+            'ARCHIVED'
+          ) {
+            throw new Error(
+              'ADMIN_ALREADY_ARCHIVED',
+            );
+          }
+
+          transaction.update(
+            userRef,
+            {
+              status:
+                nextStatus,
+
+              updatedAt:
+                FieldValue.serverTimestamp(),
+            },
+          );
+
+          transaction.create(
+            auditRef,
+            {
+              actorUid:
+                admin.uid,
+
+              actorEmail:
+                admin.email,
+
+              actorName:
+                admin.name,
+
+              eventType,
+
+              targetType:
+                'USER',
+
+              targetId:
+                uid,
+
+              schoolId,
+
+              createdAt:
+                FieldValue.serverTimestamp(),
+            },
+          );
+        },
+      );
+    } catch (error) {
+      try {
+        await firebaseAuth.updateUser(
+          uid,
+          {
+            disabled:
+              previousDisabled,
+          },
+        );
+      } catch {
+        // Avoid masking the original state-change error.
+      }
+
+      if (
+        error instanceof Error
+      ) {
+        if (
+          error.message ===
+          'ADMIN_NOT_FOUND'
+        ) {
+          return json(
+            {
+              error:
+                'school_admin_not_found',
+              message:
+                'The selected School Admin no longer exists.',
+            },
+            404,
+          );
+        }
+
+        if (
+          error.message ===
+          'INVALID_ADMIN_ROLE'
+        ) {
+          return json(
+            {
+              error:
+                'invalid_admin_role',
+              message:
+                'The selected account is not a School Admin.',
+            },
+            409,
+          );
+        }
+
+        if (
+          error.message ===
+          'ADMIN_ALREADY_ARCHIVED'
+        ) {
+          return json(
+            {
+              error:
+                'school_admin_archived',
+              message:
+                'Archived School Admins cannot be changed.',
+            },
+            409,
+          );
+        }
+      }
+
+      throw error;
+    }
+
+    const updatedData = {
+      ...data,
+      status:
+        nextStatus,
+    };
+
+    return json({
+      ok: true,
+      action,
+      admin:
+        buildAdminResponse(
+          uid,
+          updatedData,
+          schoolName,
+        ),
+    });
+  } catch (error) {
+    if (
+      error instanceof SyntaxError
+    ) {
+      return json(
+        {
+          error:
+            'Invalid JSON request.',
+        },
+        400,
+      );
+    }
+
+    return json(
+      {
+        error:
+          'Unable to manage School Admin.',
       },
       500,
     );
