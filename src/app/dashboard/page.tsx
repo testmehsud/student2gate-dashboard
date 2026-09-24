@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import {
   FormEvent,
@@ -38,6 +38,7 @@ type LiveSchool = {
   pickupReleaseMinutesBeforeBell: number | null;
   pickupSessionDurationMinutes: number | null;
 };
+
 type LiveAdmin = {
   uid: string;
   schoolId: string;
@@ -73,10 +74,10 @@ const demoSchools: DemoSchool[] = [
 ];
 
 const navItems: { label: Section; icon: string }[] = [
-  { label: 'Overview', icon: 'âŒ‚' },
-  { label: 'Schools', icon: 'â–¦' },
-  { label: 'School Admins', icon: 'â™™' },
-  { label: 'Audit Log', icon: 'â—·' },
+  { label: 'Overview', icon: '⌂' },
+  { label: 'Schools', icon: '▦' },
+  { label: 'School Admins', icon: '♙' },
+  { label: 'Audit Log', icon: '◷' },
 ];
 
 export default function Home() {
@@ -175,6 +176,7 @@ export default function Home() {
     const timer = window.setTimeout(() => {
       void loadSchools();
     }, 0);
+
     return () => window.clearTimeout(timer);
   }, [loadSchools]);
 
@@ -197,7 +199,8 @@ export default function Home() {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
-            'Content-Type': 'application/json',
+            'Content-Type':
+              'application/json',
           },
         },
       );
@@ -328,7 +331,7 @@ export default function Home() {
                 setMobileOpen(true)
               }
             >
-              â˜°
+              ☰
             </button>
 
             <div>
@@ -345,7 +348,7 @@ export default function Home() {
               className="icon-button"
               aria-label="Notifications"
             >
-              â—”
+              ◔
             </button>
 
             <div className="status-chip">
@@ -396,19 +399,30 @@ export default function Home() {
       {selectedSchool && (
         <ManageSchoolModal
           school={selectedSchool}
-          onClose={() => setSelectedSchool(null)}
+          onClose={() =>
+            setSelectedSchool(null)
+          }
           onUpdated={(school) => {
             setLiveSchools((current) =>
               school.status === 'ARCHIVED'
-                ? current.filter((item) => item.schoolId !== school.schoolId)
+                ? current.filter(
+                    (item) =>
+                      item.schoolId !==
+                      school.schoolId,
+                  )
                 : current.map((item) =>
-                    item.schoolId === school.schoolId ? school : item,
+                    item.schoolId ===
+                    school.schoolId
+                      ? school
+                      : item,
                   ),
             );
+
             setSelectedSchool(null);
           }}
         />
       )}
+
       {schoolModalOpen && (
         <CreateSchoolModal
           onClose={() =>
@@ -497,28 +511,28 @@ function Overview({
           label="Active schools"
           value={String(activeSchools)}
           detail="Across the platform"
-          icon="â–¦"
+          icon="▦"
         />
 
         <StatCard
           label="School Admins"
           value="4"
-          detail="3 active Â· 1 inactive"
-          icon="â™™"
+          detail="3 active · 1 inactive"
+          icon="♙"
         />
 
         <StatCard
           label="Students"
           value={totalStudents.toLocaleString()}
           detail="Across active schools"
-          icon="â—‰"
+          icon="◉"
         />
 
         <StatCard
           label="Actions today"
           value="18"
           detail="Admin activity events"
-          icon="â†—"
+          icon="↗"
         />
       </section>
 
@@ -610,26 +624,26 @@ function Overview({
           <div className="activity-list">
             <ActivityItem
               title="School Admin provisioned"
-              target="Demo School Â· 2 min ago"
+              target="Demo School · 2 min ago"
               icon="+"
             />
 
             <ActivityItem
               title="School status updated"
-              target="Green Valley School Â· 21 min ago"
-              icon="â†»"
+              target="Green Valley School · 21 min ago"
+              icon="↻"
             />
 
             <ActivityItem
               title="Password reset initiated"
-              target="Demo School Â· 48 min ago"
-              icon="â†º"
+              target="Demo School · 48 min ago"
+              icon="↺"
             />
 
             <ActivityItem
               title="School Admin deactivated"
-              target="City Public School Â· 1 hr ago"
-              icon="âˆ’"
+              target="City Public School · 1 hr ago"
+              icon="−"
             />
           </div>
         </div>
@@ -706,12 +720,12 @@ function Schools({
         <div className="toolbar">
           <input
             className="search-input"
-            placeholder="Search schoolsâ€¦"
+            placeholder="Search schools…"
             aria-label="Search schools"
           />
 
           <button className="filter-button">
-            All statuses â–¾
+            All statuses ▾
           </button>
         </div>
 
@@ -732,7 +746,7 @@ function Schools({
               {loading && (
                 <tr>
                   <td colSpan={6}>
-                    Loading schoolsâ€¦
+                    Loading schools…
                   </td>
                 </tr>
               )}
@@ -769,7 +783,7 @@ function Schools({
                         <div className="table-secondary">
                           {school.city ||
                             'No city metadata'}
-                          {' Â· '}
+                          {' · '}
                           {school.schoolId}
                         </div>
                       </td>
@@ -784,17 +798,17 @@ function Schools({
 
                       <td>
                         {school.timezone ||
-                          'â€”'}
+                          '—'}
                       </td>
 
                       <td>
                         {school
                           .pickupRadiusMeters ??
-                          'â€”'}
-                        m Â·{' '}
+                          '—'}
+                        m ·{' '}
                         {school
                           .pickupRequestLifetimeMinutes ??
-                          'â€”'}
+                          '—'}
                         min
                       </td>
 
@@ -805,8 +819,12 @@ function Schools({
                       </td>
 
                       <td>
-                        <button className="row-action"
-                          onClick={() => onManage(school)}>
+                        <button
+                          className="row-action"
+                          onClick={() =>
+                            onManage(school)
+                          }
+                        >
                           Manage
                         </button>
                       </td>
@@ -1041,7 +1059,7 @@ function CreateSchoolModal({
             className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100"
             aria-label="Close"
           >
-            Ã—
+            ×
           </button>
         </div>
 
@@ -1314,7 +1332,7 @@ function CreateSchoolModal({
               className="primary-button"
             >
               {busy
-                ? 'Creatingâ€¦'
+                ? 'Creating…'
                 : 'Create school'}
             </button>
           </div>
@@ -1410,6 +1428,7 @@ function SchoolAdmins({
     const timer = window.setTimeout(() => {
       void loadAdmins();
     }, 0);
+
     return () => window.clearTimeout(timer);
   }, [loadAdmins]);
 
@@ -1887,7 +1906,7 @@ function CreateSchoolAdminModal({
             className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100"
             aria-label="Close"
           >
-
+            ×
           </button>
         </div>
 
@@ -1987,7 +2006,7 @@ function CreateSchoolAdminModal({
                 maxLength={128}
                 autoComplete="new-password"
                 placeholder="At least 8 characters"
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
               />
             </label>
 
@@ -2044,16 +2063,17 @@ function CreateSchoolAdminModal({
               }
               className="primary-button"
             >
-              {busy ? "Creating..." : "Create School Admin"}
+              {busy
+                ? 'Creating...'
+                : 'Create School Admin'}
             </button>
-
           </div>
-
         </form>
       </div>
     </div>
   );
 }
+
 function AuditLog() {
   return (
     <div className="page-stack">
@@ -2210,7 +2230,7 @@ function AuditRow({
         <strong>{action}</strong>
 
         <span>
-          {actor} â†’ {target}
+          {actor} → {target}
         </span>
       </div>
 
