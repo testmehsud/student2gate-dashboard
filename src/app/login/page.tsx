@@ -8,7 +8,7 @@ import {
 } from 'firebase/auth';
 import {
   firebaseAuth,
-  useEphemeralAuthPersistence,
+  setEphemeralAuthPersistence,
 } from '@/lib/firebase-client';
 
 export default function LoginPage() {
@@ -28,7 +28,7 @@ export default function LoginPage() {
     setBusy(true);
 
     try {
-      await useEphemeralAuthPersistence();
+      await setEphemeralAuthPersistence();
 
       /*
        * Start CSRF retrieval and Firebase sign-in at the same time.

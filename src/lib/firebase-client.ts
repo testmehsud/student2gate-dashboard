@@ -19,6 +19,6 @@ const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 export const firebaseAuth = getAuth(app);
 
-export async function useEphemeralAuthPersistence() {
+export async function setEphemeralAuthPersistence() {
   await setPersistence(firebaseAuth, inMemoryPersistence);
 }
