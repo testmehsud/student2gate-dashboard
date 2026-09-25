@@ -120,6 +120,11 @@ function serializeAdmin(
         ? data.name
         : '',
 
+    username:
+      typeof data.username === 'string'
+        ? data.username
+        : '',
+
     email:
       typeof data.email === 'string'
         ? data.email
@@ -195,6 +200,11 @@ function buildAdminResponse(
     name:
       typeof data.name === 'string'
         ? data.name
+        : '',
+
+    username:
+      typeof data.username === 'string'
+        ? data.username
         : '',
 
     email:

@@ -39,6 +39,7 @@ type LiveAdmin = {
   schoolId: string;
   schoolName: string;
   name: string;
+  username: string;
   email: string;
   role: string;
   status: string;
@@ -1659,6 +1660,9 @@ function SchoolAdmins({
               .toLowerCase()
               .includes(query) ||
             admin.email
+              .toLowerCase()
+              .includes(query) ||
+            admin.username
               .toLowerCase()
               .includes(query) ||
             admin.schoolName

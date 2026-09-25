@@ -6,6 +6,7 @@ type ManageSchoolAdmin = {
   uid: string;
   schoolId: string;
   schoolName: string;
+  username: string;
   name: string;
   email: string;
   role: string;
