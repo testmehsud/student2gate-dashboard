@@ -822,6 +822,37 @@ function Schools({
   onCreate: () => void;
   onManage: (school: LiveSchool) => void;
 }) {
+  const [searchQuery, setSearchQuery] =
+    useState('');
+  const [statusFilter, setStatusFilter] =
+    useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
+
+  const filteredSchools = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    return schools.filter((school) => {
+      const matchesStatus =
+        statusFilter === 'ALL' ||
+        school.status === statusFilter;
+
+      if (!matchesStatus) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return [
+        school.name,
+        school.city,
+        school.schoolId,
+        school.timezone,
+      ].some((value) =>
+        value.toLowerCase().includes(query),
+      );
+    });
+  }, [schools, searchQuery, statusFilter]);
   return (
     <div className="page-stack">
       <section className="section-intro">
@@ -877,11 +908,35 @@ function Schools({
             className="search-input"
             placeholder="Search schools…"
             aria-label="Search schools"
+            value={searchQuery}
+            onChange={(event) =>
+              setSearchQuery(event.target.value)
+            }
           />
 
-          <button className="filter-button">
-            All statuses ▾
-          </button>
+          <select
+            className="filter-button"
+            aria-label="Filter schools by status"
+            value={statusFilter}
+            onChange={(event) =>
+              setStatusFilter(
+                event.target.value as
+                  | 'ALL'
+                  | 'ACTIVE'
+                  | 'INACTIVE',
+              )
+            }
+          >
+            <option value="ALL">
+              All statuses
+            </option>
+            <option value="ACTIVE">
+              Active
+            </option>
+            <option value="INACTIVE">
+              Inactive
+            </option>
+          </select>
         </div>
 
         <div className="table-wrap">
@@ -907,17 +962,18 @@ function Schools({
               )}
 
               {!loading &&
-                schools.length === 0 && (
+                filteredSchools.length === 0 && (
                   <tr>
                     <td colSpan={6}>
-                      No schools have been
-                      created yet.
+                      {schools.length === 0
+                        ? 'No schools have been created yet.'
+                        : 'No schools match the current search or status filter.'}
                     </td>
                   </tr>
                 )}
 
               {!loading &&
-                schools.map((school) => {
+                filteredSchools.map((school) => {
                   const badgeStatus:
                     | 'ACTIVE'
                     | 'SUSPENDED' =
