@@ -180,13 +180,89 @@ export async function GET() {
   try {
     const db = getAdminDb();
 
-    const snapshot = await db
-      .collection('schools')
-      .get();
+    const [
+      schoolSnapshot,
+      adminSnapshot,
+      studentSnapshot,
+    ] = await Promise.all([
+      db
+        .collection('schools')
+        .get(),
 
-    const schools = snapshot.docs
-      .filter((doc) => doc.data()?.status !== 'ARCHIVED')
-      .map(serializeSchool)
+      db
+        .collection('users')
+        .where('role', '==', 'SCHOOL_ADMIN')
+        .get(),
+
+      db
+        .collectionGroup('students')
+        .where('status', '==', 'ACTIVE')
+        .get(),
+    ]);
+
+    const adminCounts = new Map<string, number>();
+    const activeAdminCounts = new Map<string, number>();
+
+    for (const snapshot of adminSnapshot.docs) {
+      const data = snapshot.data() ?? {};
+      const schoolId =
+        typeof data.schoolId === 'string'
+          ? data.schoolId
+          : '';
+
+      if (!schoolId || data.status === 'ARCHIVED') {
+        continue;
+      }
+
+      adminCounts.set(
+        schoolId,
+        (adminCounts.get(schoolId) ?? 0) + 1,
+      );
+
+      if (data.status === 'ACTIVE') {
+        activeAdminCounts.set(
+          schoolId,
+          (activeAdminCounts.get(schoolId) ?? 0) + 1,
+        );
+      }
+    }
+
+    const studentCounts = new Map<string, number>();
+
+    for (const snapshot of studentSnapshot.docs) {
+      const data = snapshot.data() ?? {};
+      const schoolId =
+        typeof data.schoolId === 'string'
+          ? data.schoolId
+          : '';
+
+      if (!schoolId) {
+        continue;
+      }
+
+      studentCounts.set(
+        schoolId,
+        (studentCounts.get(schoolId) ?? 0) + 1,
+      );
+    }
+
+    const schools = schoolSnapshot.docs
+      .filter(
+        (doc) => doc.data()?.status !== 'ARCHIVED',
+      )
+      .map((doc) => {
+        const school = serializeSchool(doc);
+
+        return {
+          ...school,
+          adminCount:
+            adminCounts.get(school.schoolId) ?? 0,
+          activeAdminCount:
+            activeAdminCounts.get(school.schoolId) ?? 0,
+          studentCount:
+            studentCounts.get(school.schoolId) ?? 0,
+        };
+      })
       .sort((a, b) =>
         a.name.localeCompare(b.name),
       );
@@ -202,7 +278,6 @@ export async function GET() {
     );
   }
 }
-
 export async function POST(
   request: NextRequest,
 ) {

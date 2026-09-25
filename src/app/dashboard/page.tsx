@@ -16,14 +16,6 @@ type Section =
   | 'School Admins'
   | 'Audit Log';
 
-type DemoSchool = {
-  name: string;
-  city: string;
-  status: 'ACTIVE' | 'SUSPENDED';
-  admins: number;
-  students: number;
-};
-
 type LiveSchool = {
   schoolId: string;
   name: string;
@@ -37,6 +29,9 @@ type LiveSchool = {
   pickupRequestLifetimeMinutes: number | null;
   pickupReleaseMinutesBeforeBell: number | null;
   pickupSessionDurationMinutes: number | null;
+  studentCount?: number;
+  adminCount?: number;
+  activeAdminCount?: number;
 };
 
 type LiveAdmin = {
@@ -48,30 +43,6 @@ type LiveAdmin = {
   role: string;
   status: string;
 };
-
-const demoSchools: DemoSchool[] = [
-  {
-    name: 'Demo School',
-    city: 'Islamabad',
-    status: 'ACTIVE',
-    admins: 2,
-    students: 186,
-  },
-  {
-    name: 'Green Valley School',
-    city: 'Rawalpindi',
-    status: 'ACTIVE',
-    admins: 1,
-    students: 124,
-  },
-  {
-    name: 'City Public School',
-    city: 'Peshawar',
-    status: 'SUSPENDED',
-    admins: 1,
-    students: 0,
-  },
-];
 
 const navItems: { label: Section; icon: string }[] = [
   { label: 'Overview', icon: '⌂' },
@@ -107,23 +78,59 @@ export default function Home() {
   const [selectedSchool, setSelectedSchool] =
     useState<LiveSchool | null>(null);
 
-  const activeDemoSchools = useMemo(
+  const activeSchools = useMemo(
     () =>
-      demoSchools.filter(
-        (school) =>
-          school.status === 'ACTIVE',
+      liveSchools.filter(
+        (school) => school.status === 'ACTIVE',
       ).length,
-    [],
+    [liveSchools],
   );
 
-  const totalDemoStudents = useMemo(
+  const totalStudents = useMemo(
     () =>
-      demoSchools.reduce(
+      liveSchools
+        .filter(
+          (school) => school.status === 'ACTIVE',
+        )
+        .reduce(
         (sum, school) =>
-          sum + school.students,
+            sum + (school.studentCount ?? 0),
+          0,
+        ),
+    [liveSchools],
+  );
+
+  const totalAdmins = useMemo(
+    () =>
+      liveSchools.reduce(
+        (sum, school) =>
+          sum + (school.adminCount ?? 0),
         0,
       ),
-    [],
+    [liveSchools],
+  );
+
+  const activeAdminTotal = useMemo(
+    () =>
+      liveSchools.reduce(
+        (sum, school) =>
+          sum + (school.activeAdminCount ?? 0),
+        0,
+      ),
+    [liveSchools],
+  );
+
+  const inactiveAdminTotal = Math.max(
+    totalAdmins - activeAdminTotal,
+    0,
+  );
+
+  const schoolsNeedingAttention = useMemo(
+    () =>
+      liveSchools.filter(
+        (school) => school.status !== 'ACTIVE',
+      ).length,
+    [liveSchools],
   );
 
   const loadSchools = useCallback(async () => {
@@ -360,12 +367,16 @@ export default function Home() {
 
         {section === 'Overview' && (
           <Overview
-            activeSchools={
-              activeDemoSchools
+            activeSchools={activeSchools}
+            totalStudents={totalStudents}
+            totalAdmins={totalAdmins}
+            activeAdminTotal={activeAdminTotal}
+            inactiveAdminTotal={inactiveAdminTotal}
+            schoolsNeedingAttention={
+              schoolsNeedingAttention
             }
-            totalStudents={
-              totalDemoStudents
-            }
+            schools={liveSchools}
+            schoolsLoading={schoolsLoading}
             onNavigate={navigate}
           />
         )}
@@ -449,10 +460,22 @@ export default function Home() {
 function Overview({
   activeSchools,
   totalStudents,
+  totalAdmins,
+  activeAdminTotal,
+  inactiveAdminTotal,
+  schoolsNeedingAttention,
+  schools,
+  schoolsLoading,
   onNavigate,
 }: {
   activeSchools: number;
   totalStudents: number;
+  totalAdmins: number;
+  activeAdminTotal: number;
+  inactiveAdminTotal: number;
+  schoolsNeedingAttention: number;
+  schools: LiveSchool[];
+  schoolsLoading: boolean;
   onNavigate: (
     section: Section,
   ) => void;
@@ -516,8 +539,8 @@ function Overview({
 
         <StatCard
           label="School Admins"
-          value="4"
-          detail="3 active · 1 inactive"
+          value={String(totalAdmins)}
+          detail={`${activeAdminTotal} active · ${inactiveAdminTotal} inactive`}
           icon="♙"
         />
 
@@ -529,9 +552,9 @@ function Overview({
         />
 
         <StatCard
-          label="Actions today"
-          value="18"
-          detail="Admin activity events"
+          label="Schools needing attention"
+          value={String(schoolsNeedingAttention)}
+          detail="Non-active schools"
           icon="↗"
         />
       </section>
@@ -563,39 +586,66 @@ function Overview({
                 <tr>
                   <th>School</th>
                   <th>Status</th>
-                  <th>Admins</th>
-                  <th>Students</th>
+                  <th>Active Admins</th>
+                  <th>Active Students</th>
                 </tr>
               </thead>
 
               <tbody>
-                {demoSchools.map((school) => (
-                  <tr key={school.name}>
-                    <td>
-                      <div className="table-primary">
-                        {school.name}
-                      </div>
-
-                      <div className="table-secondary">
-                        {school.city}
-                      </div>
-                    </td>
-
-                    <td>
-                      <StatusBadge
-                        status={school.status}
-                      />
-                    </td>
-
-                    <td>
-                      {school.admins}
-                    </td>
-
-                    <td>
-                      {school.students}
+                {schoolsLoading && (
+                  <tr>
+                    <td colSpan={4}>
+                      Loading schools…
                     </td>
                   </tr>
-                ))}
+                )}
+
+                {!schoolsLoading &&
+                  schools.length === 0 && (
+                  <tr>
+                    <td colSpan={4}>
+                      No schools have been created yet.
+                    </td>
+                  </tr>
+                )}
+
+                {!schoolsLoading &&
+                  schools.map((school) => {
+                    const badgeStatus:
+                      | 'ACTIVE'
+                      | 'SUSPENDED' =
+                      school.status === 'ACTIVE'
+                        ? 'ACTIVE'
+                        : 'SUSPENDED';
+
+                    return (
+                      <tr key={school.schoolId}>
+                        <td>
+                          <div className="table-primary">
+                            {school.name}
+                          </div>
+
+                          <div className="table-secondary">
+                            {school.city || 'No city metadata'}
+                          </div>
+                        </td>
+
+                        <td>
+                          <StatusBadge
+                            status={badgeStatus}
+                          />
+                        </td>
+
+                        <td>
+                          {school.activeAdminCount ?? 0}
+                        </td>
+
+                        <td>
+                          {school.studentCount ?? 0}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
@@ -622,29 +672,9 @@ function Overview({
           </div>
 
           <div className="activity-list">
-            <ActivityItem
-              title="School Admin provisioned"
-              target="Demo School · 2 min ago"
-              icon="+"
-            />
-
-            <ActivityItem
-              title="School status updated"
-              target="Green Valley School · 21 min ago"
-              icon="↻"
-            />
-
-            <ActivityItem
-              title="Password reset initiated"
-              target="Demo School · 48 min ago"
-              icon="↺"
-            />
-
-            <ActivityItem
-              title="School Admin deactivated"
-              target="City Public School · 1 hr ago"
-              icon="−"
-            />
+            <p className="table-secondary">
+              No live activity events are available in the dashboard yet.
+            </p>
           </div>
         </div>
       </section>
@@ -2144,40 +2174,9 @@ function AuditLog() {
 
       <section className="panel">
         <div className="audit-list">
-          <AuditRow
-            action="School Admin provisioned"
-            actor="Platform Owner"
-            target="Demo School"
-            time="2 min ago"
-          />
-
-          <AuditRow
-            action="School status updated"
-            actor="Platform Owner"
-            target="Green Valley School"
-            time="21 min ago"
-          />
-
-          <AuditRow
-            action="Password reset initiated"
-            actor="Platform Owner"
-            target="Demo School"
-            time="48 min ago"
-          />
-
-          <AuditRow
-            action="School Admin deactivated"
-            actor="Platform Owner"
-            target="City Public School"
-            time="1 hr ago"
-          />
-
-          <AuditRow
-            action="School created"
-            actor="Platform Owner"
-            target="City Public School"
-            time="Yesterday"
-          />
+          <p className="table-secondary">
+            No audit events are available in the dashboard yet.
+          </p>
         </div>
       </section>
     </div>
@@ -2234,57 +2233,5 @@ function StatusBadge({
       <span />
       {status}
     </span>
-  );
-}
-
-function ActivityItem({
-  title,
-  target,
-  icon,
-}: {
-  title: string;
-  target: string;
-  icon: string;
-}) {
-  return (
-    <div className="activity-item">
-      <div className="activity-icon">
-        {icon}
-      </div>
-
-      <div className="activity-copy">
-        <strong>{title}</strong>
-
-        <span>{target}</span>
-      </div>
-    </div>
-  );
-}
-
-function AuditRow({
-  action,
-  actor,
-  target,
-  time,
-}: {
-  action: string;
-  actor: string;
-  target: string;
-  time: string;
-}) {
-  return (
-    <div className="audit-row">
-      <div className="audit-marker" />
-
-      <div className="audit-main">
-        <strong>{action}</strong>
-
-        <span>
-          {actor} → {target}
-        </span>
-      </div>
-
-      <time>{time}</time>
-    </div>
   );
 }
