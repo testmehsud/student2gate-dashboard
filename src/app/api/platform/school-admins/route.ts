@@ -556,6 +556,33 @@ export async function POST(
             );
           }
 
+          const currentSchoolData =
+            currentSchool.data() ?? {};
+
+          const activeSchoolAdminUid =
+            typeof currentSchoolData.activeSchoolAdminUid === 'string'
+              ? currentSchoolData.activeSchoolAdminUid
+              : '';
+
+          if (
+            activeSchoolAdminUid &&
+            activeSchoolAdminUid !== createdUid
+          ) {
+            throw new Error(
+              'SCHOOL_ALREADY_HAS_ACTIVE_ADMIN',
+            );
+          }
+
+          transaction.update(
+            schoolRef,
+            {
+              activeSchoolAdminUid:
+                createdUid,
+              updatedAt:
+                FieldValue.serverTimestamp(),
+            },
+          );
+
           transaction.create(
             userRef,
             {
@@ -703,6 +730,22 @@ export async function POST(
               'admin_profile_exists',
             message:
               'This Firebase user already has a Student2Gate profile.',
+          },
+          409,
+        );
+      }
+
+      if (
+        error instanceof Error &&
+        error.message ===
+          'SCHOOL_ALREADY_HAS_ACTIVE_ADMIN'
+      ) {
+        return json(
+          {
+            error:
+              'school_already_has_active_admin',
+            message:
+              'This school already has an active School Admin.',
           },
           409,
         );
@@ -1127,6 +1170,18 @@ export async function PATCH(
                 userRef,
               );
 
+            const currentSchool =
+              await transaction.get(
+                schoolRef,
+              );
+
+            const targetSchool =
+              nextSchoolId === schoolId
+                ? currentSchool
+                : await transaction.get(
+                    nextSchoolRef,
+                  );
+
             if (!current.exists) {
               throw new Error(
                 'ADMIN_NOT_FOUND',
@@ -1152,6 +1207,85 @@ export async function PATCH(
               throw new Error(
                 'ADMIN_ALREADY_ARCHIVED',
               );
+            }
+
+            if (
+              !targetSchool.exists ||
+              targetSchool.data()
+                ?.status !== 'ACTIVE'
+            ) {
+              throw new Error(
+                'SCHOOL_NOT_ACTIVE',
+              );
+            }
+
+            const targetSchoolData =
+              targetSchool.data() ?? {};
+
+            const targetActiveSchoolAdminUid =
+              typeof targetSchoolData.activeSchoolAdminUid === 'string'
+                ? targetSchoolData.activeSchoolAdminUid
+                : '';
+
+            if (
+              currentData.status === 'ACTIVE' &&
+              targetActiveSchoolAdminUid &&
+              targetActiveSchoolAdminUid !== uid
+            ) {
+              throw new Error(
+                'SCHOOL_ALREADY_HAS_ACTIVE_ADMIN',
+              );
+            }
+
+            const currentSchoolData =
+              currentSchool.data() ?? {};
+
+            const currentActiveSchoolAdminUid =
+              typeof currentSchoolData.activeSchoolAdminUid === 'string'
+                ? currentSchoolData.activeSchoolAdminUid
+                : '';
+
+            if (
+              currentData.status === 'ACTIVE'
+            ) {
+              if (
+                nextSchoolId === schoolId
+              ) {
+                transaction.update(
+                  schoolRef,
+                  {
+                    activeSchoolAdminUid:
+                      uid,
+                    updatedAt:
+                      FieldValue.serverTimestamp(),
+                  },
+                );
+              } else {
+                if (
+                  currentActiveSchoolAdminUid ===
+                  uid
+                ) {
+                  transaction.update(
+                    schoolRef,
+                    {
+                      activeSchoolAdminUid:
+                        FieldValue.delete(),
+                      updatedAt:
+                        FieldValue.serverTimestamp(),
+                    },
+                  );
+                }
+
+                transaction.update(
+                  nextSchoolRef,
+                  {
+                    activeSchoolAdminUid:
+                      uid,
+                    updatedAt:
+                      FieldValue.serverTimestamp(),
+                  },
+                );
+              }
             }
 
             transaction.update(
@@ -1263,6 +1397,36 @@ export async function PATCH(
                   'school_admin_archived',
                 message:
                   'Archived School Admins cannot be changed.',
+              },
+              409,
+            );
+          }
+
+          if (
+            error.message ===
+            'SCHOOL_NOT_ACTIVE'
+          ) {
+            return json(
+              {
+                error:
+                  'school_not_active',
+                message:
+                  'School Admins can only be assigned to an active school.',
+              },
+              409,
+            );
+          }
+
+          if (
+            error.message ===
+            'SCHOOL_ALREADY_HAS_ACTIVE_ADMIN'
+          ) {
+            return json(
+              {
+                error:
+                  'school_already_has_active_admin',
+                message:
+                  'This school already has an active School Admin.',
               },
               409,
             );
@@ -1586,10 +1750,17 @@ export async function PATCH(
 
       await db.runTransaction(
         async (transaction) => {
-          const current =
-            await transaction.get(
+          const [
+            current,
+            currentSchool,
+          ] = await Promise.all([
+            transaction.get(
               userRef,
-            );
+            ),
+            transaction.get(
+              schoolRef,
+            ),
+          ]);
 
           if (!current.exists) {
             throw new Error(
@@ -1615,6 +1786,65 @@ export async function PATCH(
           ) {
             throw new Error(
               'ADMIN_ALREADY_ARCHIVED',
+            );
+          }
+
+          if (
+            !currentSchool.exists
+          ) {
+            throw new Error(
+              'SCHOOL_NOT_FOUND',
+            );
+          }
+
+          const currentSchoolData =
+            currentSchool.data() ?? {};
+
+          const activeSchoolAdminUid =
+            typeof currentSchoolData.activeSchoolAdminUid === 'string'
+              ? currentSchoolData.activeSchoolAdminUid
+              : '';
+
+          if (
+            nextStatus === 'ACTIVE'
+          ) {
+            if (
+              currentSchoolData.status !== 'ACTIVE'
+            ) {
+              throw new Error(
+                'SCHOOL_NOT_ACTIVE',
+              );
+            }
+
+            if (
+              activeSchoolAdminUid &&
+              activeSchoolAdminUid !== uid
+            ) {
+              throw new Error(
+                'SCHOOL_ALREADY_HAS_ACTIVE_ADMIN',
+              );
+            }
+
+            transaction.update(
+              schoolRef,
+              {
+                activeSchoolAdminUid:
+                  uid,
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+            );
+          } else if (
+            activeSchoolAdminUid === uid
+          ) {
+            transaction.update(
+              schoolRef,
+              {
+                activeSchoolAdminUid:
+                  FieldValue.delete(),
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
             );
           }
 
@@ -1713,6 +1943,51 @@ export async function PATCH(
                 'school_admin_archived',
               message:
                 'Archived School Admins cannot be changed.',
+            },
+            409,
+          );
+        }
+
+        if (
+          error.message ===
+          'SCHOOL_NOT_FOUND'
+        ) {
+          return json(
+            {
+              error:
+                'school_not_found',
+              message:
+                'The School Admin school does not exist.',
+            },
+            404,
+          );
+        }
+
+        if (
+          error.message ===
+          'SCHOOL_NOT_ACTIVE'
+        ) {
+          return json(
+            {
+              error:
+                'school_not_active',
+              message:
+                'A School Admin cannot be reactivated while the school is not active.',
+            },
+            409,
+          );
+        }
+
+        if (
+          error.message ===
+          'SCHOOL_ALREADY_HAS_ACTIVE_ADMIN'
+        ) {
+          return json(
+            {
+              error:
+                'school_already_has_active_admin',
+              message:
+                'This school already has an active School Admin.',
             },
             409,
           );
