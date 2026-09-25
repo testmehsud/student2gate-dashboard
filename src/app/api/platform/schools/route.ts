@@ -196,7 +196,6 @@ export async function GET() {
 
       db
         .collectionGroup('students')
-        .where('status', '==', 'ACTIVE')
         .get(),
     ]);
 
@@ -236,7 +235,10 @@ export async function GET() {
           ? data.schoolId
           : '';
 
-      if (!schoolId) {
+      if (
+        !schoolId ||
+        data.status !== 'ACTIVE'
+      ) {
         continue;
       }
 
