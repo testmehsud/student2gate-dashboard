@@ -44,6 +44,18 @@ type LiveAdmin = {
   status: string;
 };
 
+type AuditEvent = {
+  id: string;
+  actorUid: string;
+  actorName: string;
+  actorEmail: string;
+  eventType: string;
+  targetType: string;
+  targetId: string;
+  schoolId: string;
+  createdAt: string | null;
+};
+
 const navItems: { label: Section; icon: string }[] = [
   { label: 'Overview', icon: '⌂' },
   { label: 'Schools', icon: '▦' },
@@ -403,7 +415,7 @@ export default function Home() {
         )}
 
         {section === 'Audit Log' && (
-          <AuditLog />
+          <AuditLog schools={liveSchools} />
         )}
       </section>
 
@@ -2154,7 +2166,76 @@ function CreateSchoolAdminModal({
   );
 }
 
-function AuditLog() {
+function AuditLog({
+  schools,
+}: {
+  schools: LiveSchool[];
+}) {
+  const [events, setEvents] =
+    useState<AuditEvent[]>([]);
+  const [loading, setLoading] =
+    useState(true);
+  const [error, setError] =
+    useState('');
+
+  const loadAuditEvents = useCallback(
+    async () => {
+      setLoading(true);
+      setError('');
+
+      try {
+        const response = await fetch(
+          '/api/platform/audit-log',
+          {
+            method: 'GET',
+            credentials: 'same-origin',
+            cache: 'no-store',
+          },
+        );
+
+        const result = await response
+          .json()
+          .catch(() => null);
+
+        if (!response.ok) {
+          throw new Error(
+            typeof result?.error === 'string'
+              ? result.error
+              : 'Unable to load audit events.',
+          );
+        }
+
+        if (!Array.isArray(result?.events)) {
+          throw new Error(
+            'Invalid audit data received from the server.',
+          );
+        }
+
+        setEvents(
+          result.events as AuditEvent[],
+        );
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to load audit events.',
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadAuditEvents();
+    }, 0);
+
+    return () =>
+      window.clearTimeout(timer);
+  }, [loadAuditEvents]);
+
   return (
     <div className="page-stack">
       <section className="section-intro">
@@ -2170,19 +2251,152 @@ function AuditLog() {
             across Student2Gate.
           </p>
         </div>
+
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() =>
+            void loadAuditEvents()
+          }
+          disabled={loading}
+        >
+          {loading ? 'Refreshing...' : 'Refresh'}
+        </button>
       </section>
+
+      {error && (
+        <section className="info-banner">
+          <div className="info-icon">!</div>
+
+          <div>
+            <strong>
+              Unable to load audit events
+            </strong>
+
+            <p>{error}</p>
+          </div>
+        </section>
+      )}
 
       <section className="panel">
         <div className="audit-list">
-          <p className="table-secondary">
-            No audit events are available in the dashboard yet.
-          </p>
+          {loading && (
+            <p className="table-secondary">
+              Loading live audit events…
+            </p>
+          )}
+
+          {!loading &&
+            events.length === 0 && (
+              <p className="table-secondary">
+                No audit events are available yet.
+              </p>
+            )}
+
+          {!loading &&
+            events.map((event) => {
+              const schoolName =
+                schools.find(
+                  (school) =>
+                    school.schoolId ===
+                    event.schoolId,
+                )?.name ?? event.schoolId;
+
+              const target =
+                event.targetType === 'SCHOOL'
+                  ? schoolName
+                  : event.targetId ||
+                    event.targetType;
+
+              return (
+                <div
+                  className="audit-row"
+                  key={event.id}
+                >
+                  <div className="audit-marker" />
+
+                  <div className="audit-main">
+                    <strong>
+                      {formatAuditEventType(
+                        event.eventType,
+                      )}
+                    </strong>
+
+                    <span>
+                      {event.actorName ||
+                        event.actorEmail ||
+                        event.actorUid}{' '}
+                      → {target}
+                    </span>
+                  </div>
+
+                  <time
+                    dateTime={
+                      event.createdAt ??
+                      undefined
+                    }
+                  >
+                    {formatAuditTimestamp(
+                      event.createdAt,
+                    )}
+                  </time>
+                </div>
+              );
+            })}
         </div>
       </section>
     </div>
   );
 }
 
+function formatAuditEventType(
+  eventType: string,
+): string {
+  const labels: Record<string, string> = {
+    PLATFORM_SCHOOL_CREATED:
+      'School created',
+    PLATFORM_SCHOOL_DEACTIVATED:
+      'School deactivated',
+    PLATFORM_SCHOOL_REACTIVATED:
+      'School reactivated',
+    PLATFORM_SCHOOL_ADMIN_CREATED:
+      'School Admin created',
+    PLATFORM_SCHOOL_ADMIN_UPDATED:
+      'School Admin updated',
+    PLATFORM_SCHOOL_ADMIN_DEACTIVATED:
+      'School Admin deactivated',
+    PLATFORM_SCHOOL_ADMIN_REACTIVATED:
+      'School Admin reactivated',
+    PLATFORM_SCHOOL_ADMIN_ARCHIVED:
+      'School Admin archived',
+    PLATFORM_SCHOOL_ADMIN_PASSWORD_RESET:
+      'School Admin password reset',
+  };
+
+  return (
+    labels[eventType] ??
+    eventType
+      .replace(/^PLATFORM_/, '')
+      .replace(/_/g, ' ')
+      .toLowerCase()
+  );
+}
+
+function formatAuditTimestamp(
+  value: string | null,
+): string {
+  if (!value) {
+    return 'Time unavailable';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
+}
 function StatCard({
   label,
   value,
