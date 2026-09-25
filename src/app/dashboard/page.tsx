@@ -1705,7 +1705,7 @@ function SchoolAdmins({
                       <td>
                         <button
                           type="button"
-                          className="secondary-button"
+                          className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
                           onClick={() =>
                             setSelectedAdmin(admin)
                           }
@@ -1752,6 +1752,7 @@ function SchoolAdmins({
       {selectedAdmin && (
         <ManageSchoolAdminModal
           admin={selectedAdmin}
+          schools={schools}
           onClose={() =>
             setSelectedAdmin(null)
           }

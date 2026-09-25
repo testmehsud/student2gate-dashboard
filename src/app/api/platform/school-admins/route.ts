@@ -820,6 +820,7 @@ export async function PATCH(
 
     const allowedActions =
       new Set([
+        'update',
         'deactivate',
         'reactivate',
         'archive',
@@ -834,7 +835,7 @@ export async function PATCH(
           error:
             'invalid_action',
           message:
-            'Use deactivate, reactivate, archive, or reset_password.',
+            'Use update, deactivate, reactivate, archive, or reset_password.',
         },
         400,
       );
@@ -948,6 +949,338 @@ export async function PATCH(
     const firebaseAuth =
       getAdminAuth();
 
+    if (
+      action ===
+      'update'
+    ) {
+      const name =
+        typeof body?.name === 'string'
+          ? body.name.trim()
+          : '';
+
+      const email =
+        typeof body?.email === 'string'
+          ? body.email.trim().toLowerCase()
+          : '';
+
+      const nextSchoolId =
+        typeof body?.schoolId === 'string'
+          ? body.schoolId.trim()
+          : '';
+
+      if (
+        name.length < MIN_NAME_LENGTH ||
+        name.length > MAX_NAME_LENGTH
+      ) {
+        return json(
+          {
+            error: 'invalid_name',
+            message:
+              `Name must be ${MIN_NAME_LENGTH}-${MAX_NAME_LENGTH} characters.`,
+          },
+          400,
+        );
+      }
+
+      if (
+        email.length < 3 ||
+        email.length > MAX_EMAIL_LENGTH ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      ) {
+        return json(
+          {
+            error: 'invalid_email',
+            message: 'A valid email address is required.',
+          },
+          400,
+        );
+      }
+
+      if (
+        nextSchoolId.length < 1 ||
+        nextSchoolId.length > 128
+      ) {
+        return json(
+          {
+            error: 'invalid_school',
+            message: 'A valid school is required.',
+          },
+          400,
+        );
+      }
+
+      const nextSchoolRef =
+        db
+          .collection('schools')
+          .doc(nextSchoolId);
+
+      const nextSchoolSnapshot =
+        await nextSchoolRef.get();
+
+      if (!nextSchoolSnapshot.exists) {
+        return json(
+          {
+            error: 'school_not_found',
+            message: 'The selected school does not exist.',
+          },
+          404,
+        );
+      }
+
+      const nextSchoolData =
+        nextSchoolSnapshot.data() ?? {};
+
+      if (
+        nextSchoolData.status !==
+        'ACTIVE'
+      ) {
+        return json(
+          {
+            error: 'school_not_active',
+            message:
+              'School Admins can only be assigned to an active school.',
+          },
+          409,
+        );
+      }
+
+      const firebaseAuth =
+        getAdminAuth();
+
+      const emailOwner =
+        await firebaseAuth
+          .getUserByEmail(email)
+          .catch((error) => {
+            const code =
+              typeof error === 'object' &&
+              error !== null &&
+              'code' in error
+                ? String(
+                    (
+                      error as {
+                        code?: unknown;
+                      }
+                    ).code ?? '',
+                  )
+                : '';
+
+            if (
+              code ===
+              'auth/user-not-found'
+            ) {
+              return null;
+            }
+
+            throw error;
+          });
+
+      if (
+        emailOwner &&
+        emailOwner.uid !== uid
+      ) {
+        return json(
+          {
+            error: 'email_already_exists',
+            message:
+              'Another Firebase account already uses this email address.',
+          },
+          409,
+        );
+      }
+
+      const currentAuthUser =
+        await firebaseAuth.getUser(uid);
+
+      const previousEmail =
+        currentAuthUser.email ?? '';
+
+      try {
+        await firebaseAuth.updateUser(
+          uid,
+          {
+            displayName: name,
+            email,
+          },
+        );
+
+        const auditRef =
+          db
+            .collection('platformAuditLog')
+            .doc(
+              crypto.randomUUID(),
+            );
+
+        await db.runTransaction(
+          async (transaction) => {
+            const current =
+              await transaction.get(
+                userRef,
+              );
+
+            if (!current.exists) {
+              throw new Error(
+                'ADMIN_NOT_FOUND',
+              );
+            }
+
+            const currentData =
+              current.data() ?? {};
+
+            if (
+              currentData.role !==
+              'SCHOOL_ADMIN'
+            ) {
+              throw new Error(
+                'INVALID_ADMIN_ROLE',
+              );
+            }
+
+            if (
+              currentData.status ===
+              'ARCHIVED'
+            ) {
+              throw new Error(
+                'ADMIN_ALREADY_ARCHIVED',
+              );
+            }
+
+            transaction.update(
+              userRef,
+              {
+                name,
+                email,
+                schoolId:
+                  nextSchoolId,
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+            );
+
+            transaction.create(
+              auditRef,
+              {
+                actorUid:
+                  admin.uid,
+                actorEmail:
+                  admin.email,
+                actorName:
+                  admin.name,
+                eventType:
+                  'PLATFORM_SCHOOL_ADMIN_UPDATED',
+                targetType:
+                  'USER',
+                targetId:
+                  uid,
+                previousSchoolId:
+                  typeof currentData.schoolId === 'string'
+                    ? currentData.schoolId
+                    : '',
+                schoolId:
+                  nextSchoolId,
+                changedName:
+                  currentData.name !== name,
+                changedEmail:
+                  currentData.email !== email,
+                createdAt:
+                  FieldValue.serverTimestamp(),
+              },
+            );
+          },
+        );
+      } catch (error) {
+        try {
+          const rollback: {
+            displayName?: string;
+            email?: string;
+          } = {};
+
+          if (currentAuthUser.displayName !== null) {
+            rollback.displayName =
+              currentAuthUser.displayName;
+          }
+
+          if (previousEmail) {
+            rollback.email =
+              previousEmail;
+          }
+
+          await firebaseAuth.updateUser(
+            uid,
+            rollback,
+          );
+        } catch {
+          // Avoid masking the original update error.
+        }
+
+        if (error instanceof Error) {
+          if (
+            error.message ===
+            'ADMIN_NOT_FOUND'
+          ) {
+            return json(
+              {
+                error:
+                  'school_admin_not_found',
+                message:
+                  'The selected School Admin no longer exists.',
+              },
+              404,
+            );
+          }
+
+          if (
+            error.message ===
+            'INVALID_ADMIN_ROLE'
+          ) {
+            return json(
+              {
+                error:
+                  'invalid_admin_role',
+                message:
+                  'The selected account is not a School Admin.',
+              },
+              409,
+            );
+          }
+
+          if (
+            error.message ===
+            'ADMIN_ALREADY_ARCHIVED'
+          ) {
+            return json(
+              {
+                error:
+                  'school_admin_archived',
+                message:
+                  'Archived School Admins cannot be changed.',
+              },
+              409,
+            );
+          }
+        }
+
+        throw error;
+      }
+
+      return json({
+        ok: true,
+        action,
+        admin:
+          buildAdminResponse(
+            uid,
+            {
+              ...data,
+              name,
+              email,
+              schoolId:
+                nextSchoolId,
+            },
+            typeof nextSchoolData.name === 'string'
+              ? nextSchoolData.name
+              : '',
+          ),
+      });
+    }
     if (
       action ===
       'reset_password'

@@ -12,7 +12,14 @@ type ManageSchoolAdmin = {
   status: string;
 };
 
+type SchoolOption = {
+  schoolId: string;
+  name: string;
+  status: string;
+};
+
 type AdminAction =
+  | 'update'
   | 'deactivate'
   | 'reactivate'
   | 'archive'
@@ -20,16 +27,21 @@ type AdminAction =
 
 export default function ManageSchoolAdminModal({
   admin,
+  schools,
   onClose,
   onUpdated,
 }: {
   admin: ManageSchoolAdmin;
+  schools: SchoolOption[];
   onClose: () => void;
   onUpdated: (admin: ManageSchoolAdmin) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [resetMode, setResetMode] = useState(false);
+  const [name, setName] = useState(admin.name);
+  const [email, setEmail] = useState(admin.email);
+  const [schoolId, setSchoolId] = useState(admin.schoolId);
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] =
@@ -40,6 +52,11 @@ export default function ManageSchoolAdminModal({
 
   async function request(
     action: AdminAction,
+    updates?: {
+      name?: string;
+      email?: string;
+      schoolId?: string;
+    },
   ) {
     if (busy || archived) {
       return;
@@ -81,6 +98,19 @@ export default function ManageSchoolAdminModal({
         uid: admin.uid,
         action,
       };
+
+      if (
+        action ===
+        'update' &&
+        updates
+      ) {
+        body.name =
+          updates.name ?? name.trim();
+        body.email =
+          updates.email ?? email.trim();
+        body.schoolId =
+          updates.schoolId ?? schoolId.trim();
+      }
 
       if (
         action ===
@@ -222,7 +252,7 @@ export default function ManageSchoolAdminModal({
           <section>
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                Account
+                Account details
               </h3>
 
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
@@ -231,46 +261,97 @@ export default function ManageSchoolAdminModal({
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">
                   Name
-                </div>
+                </span>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(event) =>
+                    setName(event.target.value)
+                  }
+                  maxLength={120}
+                  required
+                  disabled={busy}
+                  autoComplete="name"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-slate-500"
+                />
+              </label>
 
-                <div className="mt-1 text-sm font-semibold text-slate-800">
-                  {admin.name}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">
                   Email
-                </div>
+                </span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) =>
+                    setEmail(event.target.value)
+                  }
+                  maxLength={320}
+                  required
+                  disabled={busy}
+                  autoComplete="email"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-slate-500"
+                />
+              </label>
 
-                <div className="mt-1 text-sm font-semibold text-slate-800">
-                  {admin.email}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              <label className="block md:col-span-2">
+                <span className="mb-1 block text-sm font-medium text-slate-700">
                   School
-                </div>
-
-                <div className="mt-1 text-sm font-semibold text-slate-800">
-                  {admin.schoolName ||
-                    'Unknown school'}
-                </div>
-              </div>
+                </span>
+                <select
+                  value={schoolId}
+                  onChange={(event) =>
+                    setSchoolId(event.target.value)
+                  }
+                  required
+                  disabled={busy}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none focus:border-slate-500"
+                >
+                  {schools
+                    .filter(
+                      (school) =>
+                        school.status === 'ACTIVE' ||
+                        school.schoolId === admin.schoolId,
+                    )
+                    .map((school) => (
+                      <option
+                        key={school.schoolId}
+                        value={school.schoolId}
+                      >
+                        {school.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
 
               <div>
                 <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
                   Role
                 </div>
-
                 <div className="mt-1 text-sm font-semibold text-slate-800">
                   {admin.role}
                 </div>
               </div>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                disabled={busy || archived}
+                onClick={() =>
+                  void request('update', {
+                    name: name.trim(),
+                    email: email.trim(),
+                    schoolId: schoolId.trim(),
+                  })
+                }
+                className="rounded-xl bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {busy ? 'Saving...' : 'Save changes'}
+              </button>
             </div>
           </section>
 
@@ -441,7 +522,7 @@ export default function ManageSchoolAdminModal({
                   className="rounded-xl bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-800"
                 >
                   {busy
-                    ? 'Saving…'
+                    ? 'Saving...'
                     : 'Set new password'}
                 </button>
               </div>
