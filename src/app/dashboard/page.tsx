@@ -492,6 +492,71 @@ function Overview({
     section: Section,
   ) => void;
 }) {
+  const [recentEvents, setRecentEvents] =
+    useState<AuditEvent[]>([]);
+  const [recentActivityLoading, setRecentActivityLoading] =
+    useState(true);
+  const [recentActivityError, setRecentActivityError] =
+    useState('');
+
+  const loadRecentActivity = useCallback(
+    async () => {
+      setRecentActivityLoading(true);
+      setRecentActivityError('');
+
+      try {
+        const response = await fetch(
+          '/api/platform/audit-log',
+          {
+            method: 'GET',
+            credentials: 'same-origin',
+            cache: 'no-store',
+          },
+        );
+
+        const result = await response
+          .json()
+          .catch(() => null);
+
+        if (!response.ok) {
+          throw new Error(
+            typeof result?.error === 'string'
+              ? result.error
+              : 'Unable to load recent activity.',
+          );
+        }
+
+        if (!Array.isArray(result?.events)) {
+          throw new Error(
+            'Invalid activity data received from the server.',
+          );
+        }
+
+        setRecentEvents(
+          (result.events as AuditEvent[]).slice(0, 5),
+        );
+      } catch (error) {
+        setRecentActivityError(
+          error instanceof Error
+            ? error.message
+            : 'Unable to load recent activity.',
+        );
+      } finally {
+        setRecentActivityLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadRecentActivity();
+    }, 0);
+
+    return () =>
+      window.clearTimeout(timer);
+  }, [loadRecentActivity]);
+
   return (
     <div className="page-stack">
       <section className="hero-panel">
@@ -684,9 +749,57 @@ function Overview({
           </div>
 
           <div className="activity-list">
-            <p className="table-secondary">
-              No live activity events are available in the dashboard yet.
-            </p>
+            {recentActivityLoading && (
+              <p className="table-secondary">
+                Loading recent activity…
+              </p>
+            )}
+
+            {!recentActivityLoading &&
+              recentActivityError && (
+                <p className="table-secondary">
+                  {recentActivityError}
+                </p>
+              )}
+
+            {!recentActivityLoading &&
+              !recentActivityError &&
+              recentEvents.length === 0 && (
+                <p className="table-secondary">
+                  No audit events are available yet.
+                </p>
+              )}
+
+            {!recentActivityLoading &&
+              !recentActivityError &&
+              recentEvents.map((event) => (
+                <div
+                  className="activity-item"
+                  key={event.id}
+                >
+                  <div className="activity-dot" />
+
+                  <div>
+                    <strong>
+                      {formatAuditEventType(
+                        event.eventType,
+                      )}
+                    </strong>
+
+                    <span className="table-secondary">
+                      {event.actorName ||
+                        event.actorEmail ||
+                        event.actorUid}
+                    </span>
+                  </div>
+
+                  <time>
+                    {formatAuditTimestamp(
+                      event.createdAt,
+                    )}
+                  </time>
+                </div>
+              ))}
           </div>
         </div>
       </section>
