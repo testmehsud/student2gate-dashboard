@@ -21,6 +21,7 @@ type DashboardIconName =
   | 'schools'
   | 'admins'
   | 'audit'
+  | 'health'
   | 'students'
   | 'attention'
   | 'bell'
@@ -68,11 +69,12 @@ type AuditEvent = {
   createdAt: string | null;
 };
 
-const navItems: { label: Section; icon: DashboardIconName }[] = [
+const navItems: { label: Section | 'System Health'; icon: DashboardIconName }[] = [
   { label: 'Overview', icon: 'overview' },
   { label: 'Schools', icon: 'schools' },
   { label: 'School Admins', icon: 'admins' },
   { label: 'Audit Log', icon: 'audit' },
+  { label: 'System Health', icon: 'health' },
 ];
 
 function DashboardIcon({
@@ -105,6 +107,9 @@ function DashboardIcon({
         <circle cx='12' cy='12' r='8.5' />
         <path d='M12 7v5l3.3 2' />
       </>
+    ),
+    health: (
+      <path d='M3 12h4l2.3-6 4.5 12 2.2-6H21' />
     ),
     students: (
       <>
@@ -366,9 +371,15 @@ export default function Home() {
               aria-current={
                 section === item.label ? 'page' : undefined
               }
-              onClick={() =>
-                navigate(item.label)
-              }
+              onClick={() => {
+                if (item.label === 'System Health') {
+                  setMobileOpen(false);
+                  router.push('/dashboard/system-health');
+                  return;
+                }
+
+                navigate(item.label);
+              }}
             >
               <span className="nav-icon">
                 <DashboardIcon name={item.icon} />

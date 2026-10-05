@@ -105,6 +105,25 @@ export function getAdminAuth(): Auth {
   return getAuth(getFirebaseAdminApp());
 }
 
+export function getFirebaseProjectId(): string | null {
+  const configuredProjectId =
+    process.env.FIREBASE_PROJECT_ID ||
+    getFirebaseAdminApp().options.projectId;
+
+  return configuredProjectId || null;
+}
+
+export async function getAdminAccessToken(): Promise<string> {
+  const credential = getFirebaseAdminApp().options.credential;
+
+  if (!credential) {
+    throw new Error('Firebase Admin credential is unavailable.');
+  }
+
+  const token = await credential.getAccessToken();
+  return token.access_token;
+}
+
 export function getAdminDb(): Firestore {
   return getFirestore(getFirebaseAdminApp());
 }
