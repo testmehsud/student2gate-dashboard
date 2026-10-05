@@ -16,6 +16,17 @@ type Section =
   | 'School Admins'
   | 'Audit Log';
 
+type DashboardIconName =
+  | 'overview'
+  | 'schools'
+  | 'admins'
+  | 'audit'
+  | 'students'
+  | 'attention'
+  | 'bell'
+  | 'menu'
+  | 'close';
+
 type LiveSchool = {
   schoolId: string;
   name: string;
@@ -57,12 +68,74 @@ type AuditEvent = {
   createdAt: string | null;
 };
 
-const navItems: { label: Section; icon: string }[] = [
-  { label: 'Overview', icon: '⌂' },
-  { label: 'Schools', icon: '▦' },
-  { label: 'School Admins', icon: '♙' },
-  { label: 'Audit Log', icon: '◷' },
+const navItems: { label: Section; icon: DashboardIconName }[] = [
+  { label: 'Overview', icon: 'overview' },
+  { label: 'Schools', icon: 'schools' },
+  { label: 'School Admins', icon: 'admins' },
+  { label: 'Audit Log', icon: 'audit' },
 ];
+
+function DashboardIcon({
+  name,
+}: {
+  name: DashboardIconName;
+}) {
+  const shapes = {
+    overview: (
+      <>
+        <path d='M3.5 10.5 12 3.8l8.5 6.7' />
+        <path d='M5.5 9.5v10h13v-10M9.5 19.5v-6h5v6' />
+      </>
+    ),
+    schools: (
+      <>
+        <path d='M4 20V5.5h11V20M15 10h5v10M2.5 20h19' />
+        <path d='M7 8.5h1M11 8.5h1M7 12h1M11 12h1M7 15.5h1M11 15.5h1M17.5 13h1M17.5 16.5h1' />
+      </>
+    ),
+    admins: (
+      <>
+        <path d='M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20' />
+        <circle cx='9.5' cy='7.5' r='3.5' />
+        <path d='M17 4.3a3.5 3.5 0 0 1 0 6.8M17 14.5a4.2 4.2 0 0 1 4 4V20' />
+      </>
+    ),
+    audit: (
+      <>
+        <circle cx='12' cy='12' r='8.5' />
+        <path d='M12 7v5l3.3 2' />
+      </>
+    ),
+    students: (
+      <>
+        <path d='m2.8 9 9.2-5 9.2 5-9.2 5-9.2-5Z' />
+        <path d='M6.5 11.2v5.1c3.2 2.5 7.8 2.5 11 0v-5.1M21.2 9v6' />
+      </>
+    ),
+    attention: (
+      <>
+        <circle cx='12' cy='12' r='8.5' />
+        <path d='M12 7.5v5M12 16.5h.01' />
+      </>
+    ),
+    bell: (
+      <path d='M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4' />
+    ),
+    menu: <path d='M4 6h16M4 12h16M4 18h16' />,
+    close: <path d='m6 6 12 12M18 6 6 18' />,
+  };
+
+  return (
+    <svg
+      className='icon-svg'
+      viewBox='0 0 24 24'
+      aria-hidden='true'
+      focusable='false'
+    >
+      {shapes[name]}
+    </svg>
+  );
+}
 
 export default function Home() {
   const router = useRouter();
@@ -275,6 +348,7 @@ export default function Home() {
 
         <nav
           className="main-nav"
+          id="dashboard-navigation"
           aria-label="Dashboard navigation"
         >
           <div className="nav-heading">
@@ -289,12 +363,15 @@ export default function Home() {
                   ? 'nav-item nav-item-active'
                   : 'nav-item'
               }
+              aria-current={
+                section === item.label ? 'page' : undefined
+              }
               onClick={() =>
                 navigate(item.label)
               }
             >
               <span className="nav-icon">
-                {item.icon}
+                <DashboardIcon name={item.icon} />
               </span>
 
               <span>{item.label}</span>
@@ -347,11 +424,13 @@ export default function Home() {
             <button
               className="mobile-menu-button"
               aria-label="Open navigation"
+              aria-controls="dashboard-navigation"
+              aria-expanded={mobileOpen}
               onClick={() =>
                 setMobileOpen(true)
               }
             >
-              ☰
+              <DashboardIcon name="menu" />
             </button>
 
             <div>
@@ -368,7 +447,7 @@ export default function Home() {
               className="icon-button"
               aria-label="Notifications"
             >
-              ◔
+              <DashboardIcon name="bell" />
             </button>
 
             <div className="status-chip">
@@ -612,28 +691,28 @@ function Overview({
           label="Active schools"
           value={String(activeSchools)}
           detail="Across the platform"
-          icon="▦"
+          icon="schools"
         />
 
         <StatCard
           label="School Admins"
           value={String(totalAdmins)}
           detail={`${activeAdminTotal} active · ${inactiveAdminTotal} inactive`}
-          icon="♙"
+          icon="admins"
         />
 
         <StatCard
           label="Students"
           value={totalStudents.toLocaleString()}
           detail="Across active schools"
-          icon="◉"
+          icon="students"
         />
 
         <StatCard
           label="Schools needing attention"
           value={String(schoolsNeedingAttention)}
           detail="Non-active schools"
-          icon="↗"
+          icon="attention"
         />
       </section>
 
@@ -1240,7 +1319,7 @@ function CreateSchoolModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div
-        className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl"
+        className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl dashboard-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-school-title"
@@ -1268,10 +1347,10 @@ function CreateSchoolModal({
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100"
+            className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100 dashboard-modal-close"
             aria-label="Close"
           >
-            ×
+            <DashboardIcon name="close" />
           </button>
         </div>
 
@@ -2140,7 +2219,7 @@ function CreateSchoolAdminModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div
-        className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl"
+        className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl dashboard-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-school-admin-title"
@@ -2168,10 +2247,10 @@ function CreateSchoolAdminModal({
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100"
+            className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100 dashboard-modal-close"
             aria-label="Close"
           >
-            ×
+            <DashboardIcon name="close" />
           </button>
         </div>
 
@@ -2579,7 +2658,7 @@ function StatCard({
   label: string;
   value: string;
   detail: string;
-  icon: string;
+  icon: DashboardIconName;
 }) {
   return (
     <div className="stat-card">
@@ -2587,7 +2666,7 @@ function StatCard({
         <span>{label}</span>
 
         <span className="stat-icon">
-          {icon}
+          <DashboardIcon name={icon} />
         </span>
       </div>
 

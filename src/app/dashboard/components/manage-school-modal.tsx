@@ -168,7 +168,7 @@ export default function ManageSchoolModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div
-        className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl"
+        className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl dashboard-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="manage-school-title"
@@ -196,10 +196,17 @@ export default function ManageSchoolModal({
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100"
+            className="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100 dashboard-modal-close"
             aria-label="Close"
           >
-            ×
+            <svg
+              className="icon-svg"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="m6 6 12 12M18 6 6 18" />
+            </svg>
           </button>
         </div>
 
