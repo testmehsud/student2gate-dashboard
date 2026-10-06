@@ -1,5 +1,5 @@
-import { HEALTH_THRESHOLDS, MONITORING_MAX_PUBLICATION_DELAY_MS, MONITORING_STALE_AFTER_MS } from './config';
-import type { HealthState, MonitoringError } from './types';
+import { HEALTH_THRESHOLDS, PROVIDER_METRIC_MAX_DELAY_MS, PROVIDER_METRIC_STALE_AFTER_MS } from './config';
+import type { HealthState, SystemHealthError } from './types';
 
 export function evaluateWorkerHealth(
   requests: number | null,
@@ -20,101 +20,38 @@ export function evaluateWorkerHealth(
   return 'healthy';
 }
 
-export function evaluateFirestoreHealth(
-  errorRatePercent: number | null,
-  failures: number | null,
-  p95LatencyMs: number | null,
-): HealthState {
-  if (
-    errorRatePercent === null &&
-    failures === null &&
-    p95LatencyMs === null
-  ) return 'unavailable';
-
-  if (
-    (errorRatePercent !== null && errorRatePercent > HEALTH_THRESHOLDS.firestore.criticalErrorRatePercent) ||
-    (failures !== null && failures >= HEALTH_THRESHOLDS.firestore.criticalFailures) ||
-    (p95LatencyMs !== null && p95LatencyMs >= HEALTH_THRESHOLDS.firestore.criticalP95LatencyMs)
-  ) return 'critical';
-
-  if (
-    (errorRatePercent !== null && errorRatePercent > HEALTH_THRESHOLDS.firestore.warningErrorRatePercent) ||
-    (failures !== null && failures >= HEALTH_THRESHOLDS.firestore.warningFailures) ||
-    (p95LatencyMs !== null && p95LatencyMs >= HEALTH_THRESHOLDS.firestore.warningP95LatencyMs)
-  ) return 'warning';
-
-  return 'healthy';
-}
-
-export function evaluateMonitoringSampleHealth(
+export function evaluateMetricSampleHealth(
   sampledAt: string | null,
   now = Date.now(),
   noTrafficConfirmed = false,
 ): HealthState {
   if (!sampledAt) return noTrafficConfirmed ? 'healthy' : 'unavailable';
   const sampleTime = Date.parse(sampledAt);
-  if (!Number.isFinite(sampleTime) || isMonitoringDataStale(sampledAt, now)) return 'unavailable';
-  return now - sampleTime > MONITORING_MAX_PUBLICATION_DELAY_MS ? 'warning' : 'healthy';
+  if (!Number.isFinite(sampleTime) || isProviderMetricStale(sampledAt, now)) return 'unavailable';
+  return now - sampleTime > PROVIDER_METRIC_MAX_DELAY_MS ? 'warning' : 'healthy';
 }
 
-export function evaluateOverallHealth(
-  states: HealthState[],
-): HealthState {
+export function evaluateOverallHealth(states: HealthState[]): HealthState {
   if (states.includes('critical')) return 'critical';
   if (states.includes('unavailable')) return 'unavailable';
   if (states.includes('warning')) return 'warning';
   return 'healthy';
 }
 
-export function isMonitoringDataStale(
+export function isProviderMetricStale(
   sampledAt: string | null,
   now = Date.now(),
 ): boolean {
   if (!sampledAt) return true;
   const sampleTime = Date.parse(sampledAt);
-  return !Number.isFinite(sampleTime) || now - sampleTime > MONITORING_STALE_AFTER_MS;
+  return !Number.isFinite(sampleTime) || now - sampleTime > PROVIDER_METRIC_STALE_AFTER_MS;
 }
 
-const RESPONSE_CODES: Record<string, { label: string; severity: MonitoringError['severity'] }> = {
-  success: { label: 'Success', severity: 'info' },
-  ok: { label: 'Success', severity: 'info' },
-  '0': { label: 'Success', severity: 'info' },
-  '200': { label: 'Success', severity: 'info' },
-  invalid_argument: { label: 'Invalid argument', severity: 'info' },
-  not_found: { label: 'Not found', severity: 'info' },
-  already_exists: { label: 'Already exists', severity: 'info' },
-  failed_precondition: { label: 'Failed precondition', severity: 'info' },
-  unauthenticated: { label: 'Unauthenticated', severity: 'warning' },
-  permission_denied: { label: 'Permission denied', severity: 'warning' },
-  resource_exhausted: { label: 'Resource exhausted', severity: 'warning' },
-  aborted: { label: 'Aborted', severity: 'warning' },
-  deadline_exceeded: { label: 'Deadline exceeded', severity: 'warning' },
-  internal: { label: 'Internal error', severity: 'warning' },
-  unavailable: { label: 'Service unavailable', severity: 'warning' },
-  unknown: { label: 'Unknown service error', severity: 'warning' },
-  '500': { label: 'Internal error', severity: 'warning' },
-  '502': { label: 'Service unavailable', severity: 'warning' },
-  '503': { label: 'Service unavailable', severity: 'warning' },
-  '504': { label: 'Deadline exceeded', severity: 'warning' },
-};
-
-export function safeResponseCode(value: unknown): {
-  key: string;
-  label: string;
-  severity: MonitoringError['severity'];
-} {
-  const key = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  const known = RESPONSE_CODES[key];
-  return known
-    ? { key, ...known }
-    : { key: 'other', label: 'Other response', severity: 'info' };
-}
-
-export function filterMonitoringErrors(
-  errors: MonitoringError[],
+export function filterSystemHealthErrors(
+  errors: SystemHealthError[],
   service: string,
   severity: string,
-): MonitoringError[] {
+): SystemHealthError[] {
   return errors
     .filter((error) => service === 'all' || error.service === service)
     .filter((error) => severity === 'all' || error.severity === severity)

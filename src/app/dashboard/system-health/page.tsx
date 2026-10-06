@@ -5,8 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { HEALTH_THRESHOLDS, SYSTEM_HEALTH_REFRESH_INTERVAL_MS, TIME_RANGES, type TimeRange } from '@/lib/system-health/config';
-import { filterMonitoringErrors } from '@/lib/system-health/model';
-import type { HealthSource, HealthState, MonitoringError, SystemHealthPayload } from '@/lib/system-health/types';
+import { filterSystemHealthErrors } from '@/lib/system-health/model';
+import type { HealthSource, HealthState, SystemHealthError, SystemHealthPayload } from '@/lib/system-health/types';
 import styles from './system-health.module.css';
 
 const RANGE_OPTIONS = Object.keys(TIME_RANGES) as TimeRange[];
@@ -129,7 +129,7 @@ export default function SystemHealthPage() {
   const [serviceFilter, setServiceFilter] = useState('all');
   const [severityFilter, setSeverityFilter] = useState('all');
   const [sortNewestFirst, setSortNewestFirst] = useState(true);
-  const [selectedError, setSelectedError] = useState<MonitoringError | null>(null);
+  const [selectedError, setSelectedError] = useState<SystemHealthError | null>(null);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -147,7 +147,7 @@ export default function SystemHealthPage() {
         return;
       }
       if (!response.ok || !result?.ok) {
-        throw new Error('Monitoring data temporarily unavailable.');
+        throw new Error('System Health data temporarily unavailable.');
       }
 
       setPayload(result as SystemHealthPayload);
@@ -175,7 +175,7 @@ export default function SystemHealthPage() {
   }, []);
 
   const displayedErrors = useMemo(() => {
-    const filtered = filterMonitoringErrors(
+    const filtered = filterSystemHealthErrors(
       payload?.errors ?? [],
       serviceFilter,
       severityFilter,
@@ -186,7 +186,7 @@ export default function SystemHealthPage() {
   }, [payload?.errors, serviceFilter, severityFilter, sortNewestFirst]);
 
   const relativeNow = now ?? (payload ? Date.parse(payload.generatedAt) : 0);
-  const monitoringAge = payload ? relativeTime(payload.generatedAt, relativeNow) : 'Waiting for first response';
+  const snapshotAge = payload ? relativeTime(payload.generatedAt, relativeNow) : 'Waiting for first response';
   const dataRange = payload ? TIME_RANGES[payload.range].label : TIME_RANGES[range].label;
   const hasPreviousRange = payload !== null && payload.range !== range;
 
@@ -201,7 +201,7 @@ export default function SystemHealthPage() {
         </div>
         <div className={styles.headerActions}>
           <span className={styles.updated}>
-            {payload ? `Updated ${monitoringAge}` : 'Not yet updated'}
+            {payload ? `Updated ${snapshotAge}` : 'Not yet updated'}
           </span>
           <button className={styles.refreshButton} type="button" onClick={() => void load()} disabled={refreshing}>
             <span aria-hidden="true">↻</span> {refreshing ? 'Refreshing' : 'Refresh'}
@@ -211,17 +211,17 @@ export default function SystemHealthPage() {
 
       {refreshError && (
         <div className={styles.refreshNotice} role="status">
-          <strong>Monitoring data temporarily unavailable.</strong>
+          <strong>System Health data temporarily unavailable.</strong>
           {payload
             ? ` Showing the last successful ${TIME_RANGES[payload.range].label} snapshot from ${formattedDate(payload.generatedAt)}.`
-            : ' Waiting for a successful monitoring response.'}
+            : ' Waiting for a successful System Health response.'}
         </div>
       )}
 
       {initialLoading && !payload ? (
         <section className={styles.loadingPanel} aria-live="polite">
           <span className={styles.loadingMark} aria-hidden="true">S2</span>
-          <div><strong>Connecting to monitoring sources</strong><p>Checking authenticated service status and available metrics.</p></div>
+          <div><strong>Connecting to health checks and providers</strong><p>Checking authenticated service status and available metrics.</p></div>
         </section>
       ) : payload ? (
         <>
@@ -232,7 +232,7 @@ export default function SystemHealthPage() {
             <div className={styles.bannerCopy}>
               <strong>{globalLabel(payload.globalStatus)}</strong>
               <p>{payload.statusReason}</p>
-              <small>Selected period: {dataRange} · snapshot generated {monitoringAge}</small>
+              <small>Selected period: {dataRange} · snapshot generated {snapshotAge}</small>
             </div>
             <div className={styles.bannerMeta}>
               {refreshing && <span className={styles.refreshingLabel}>Refreshing in background</span>}
@@ -250,10 +250,11 @@ export default function SystemHealthPage() {
                 <span><b>{formatPercent(payload.metrics.worker.errorRatePercent)}</b> error rate</span>
               </div>
             </ServiceCard>
-            <ServiceCard title="Firestore" subtitle="DATABASE" source={payload.sources.firestoreMetrics}>
+            <ServiceCard title="Firestore" subtitle="DATABASE HEALTH" source={payload.sources.firestore}>
               <div className={styles.miniMetrics}>
-                <span><b>{formatNumber(payload.metrics.firestore.reads)}</b> reads</span>
-                <span><b>{formatNumber(payload.metrics.firestore.writes)}</b> writes</span>
+                <span><b>{statusLabel(payload.sources.firestore.status)}</b> connectivity</span>
+                <span><b>{payload.sources.firestore.latencyMs === null ? 'Unavailable' : `${formatNumber(payload.sources.firestore.latencyMs)} ms`}</b> latency</span>
+                <span><b>{relativeTime(payload.sources.firestore.checkedAt, relativeNow)}</b> last checked</span>
               </div>
             </ServiceCard>
             <ServiceCard title="Firebase Authentication" subtitle="AUTH" source={payload.sources.firebaseAuth}>
@@ -274,9 +275,9 @@ export default function SystemHealthPage() {
               <div>
                 <p className={styles.eyebrow}>Operational metrics</p>
                 <h2 id="load-heading">Load &amp; traffic</h2>
-                <p className={styles.sectionDescription}>Provider totals for the selected period. Values marked unavailable have no usable sample.</p>
+                <p className={styles.sectionDescription}>Worker request totals for the selected period. Firestore shows a connectivity check only; database usage metrics are not collected.</p>
               </div>
-              <div className={styles.rangeControl} role="group" aria-label="Monitoring time range">
+              <div className={styles.rangeControl} role="group" aria-label="Health time range">
                 {RANGE_OPTIONS.map((option) => (
                   <button
                     key={option}
@@ -294,13 +295,11 @@ export default function SystemHealthPage() {
               <StatCard label="Worker requests" value={formatNumber(payload.metrics.worker.requests)} detail={`${formatNumber(payload.metrics.worker.requestsPerMinute, 1)} requests/min average`} icon="↗" />
               <StatCard label="Worker success rate" value={formatPercent(payload.metrics.worker.requests === null || payload.metrics.worker.successes === null || payload.metrics.worker.requests === 0 ? null : (payload.metrics.worker.successes / payload.metrics.worker.requests) * 100)} detail={`${formatNumber(payload.metrics.worker.successes)} successful requests`} icon="✓" />
               <StatCard label="Worker failures" value={formatNumber(payload.metrics.worker.errors)} detail={`${formatPercent(payload.metrics.worker.errorRatePercent)} of requests`} icon="!" />
-              <StatCard label="Firestore reads" value={formatNumber(payload.metrics.firestore.reads)} detail="Document read operations" icon="↓" />
-              <StatCard label="Firestore writes" value={formatNumber(payload.metrics.firestore.writes)} detail="Document write operations" icon="↑" />
-              <StatCard label="Firestore deletes" value={formatNumber(payload.metrics.firestore.deletes)} detail="Document delete operations" icon="−" />
-              <StatCard label="Firestore API errors" value={formatNumber(payload.metrics.firestore.apiErrors)} detail={`${formatPercent(payload.metrics.firestore.errorRatePercent)} of API calls`} icon="!" />
-              <StatCard label="Firestore p95 latency" value={payload.metrics.firestore.p95LatencyMs === null ? 'Unavailable' : `${formatNumber(payload.metrics.firestore.p95LatencyMs, 1)} ms`} detail="Cloud Monitoring request latency" icon="◷" />
+              <StatCard label="Firestore health" value={statusLabel(payload.sources.firestore.status)} detail={payload.sources.firestore.detail} icon="●" />
+              <StatCard label="Firestore latency" value={payload.sources.firestore.latencyMs === null ? 'Unavailable' : `${formatNumber(payload.sources.firestore.latencyMs)} ms`} detail="Single-document connectivity check" icon="◷" />
+              <StatCard label="Firestore last checked" value={relativeTime(payload.sources.firestore.checkedAt, relativeNow)} detail="Health check only; no usage totals" icon="✓" />
             </div>
-            <p className={styles.dataCaveat}>Firestore metrics are sampled every 60 seconds and may arrive up to 4 minutes late. They are operational counts, not exact billing totals.</p>
+            <p className={styles.dataCaveat}>Database health reports connectivity and single-read latency. Database usage metrics are not collected here: exact read, write, delete, billing, and p95 infrastructure totals are unavailable.</p>
           </section>
 
           <section className={styles.panel} aria-labelledby="errors-heading">
@@ -308,7 +307,7 @@ export default function SystemHealthPage() {
               <div>
                 <p className={styles.eyebrow}>Incident signals</p>
                 <h2 id="errors-heading">Errors</h2>
-                <p className={styles.sectionDescription}>Recent provider error groups in the selected period. Status means observed; no resolution system is connected.</p>
+                <p className={styles.sectionDescription}>Sanitized aggregate Worker errors in the selected period. Status means observed; no resolution system is connected.</p>
               </div>
               <div className={styles.errorTotals}>
                 <span className={styles.criticalCount}>{payload.errors.filter((item) => item.severity === 'critical').length} critical</span>
@@ -320,7 +319,7 @@ export default function SystemHealthPage() {
                 <select value={serviceFilter} onChange={(event) => setServiceFilter(event.target.value)}>
                   <option value="all">All services</option>
                   <option value="Student2Gate Worker">Worker</option>
-                  <option value="Firestore">Firestore</option>
+
                 </select>
               </label>
               <label>Severity
@@ -361,7 +360,7 @@ export default function SystemHealthPage() {
             </div>
             <div className={styles.issueSourceNote}>
               <strong>Cloudflare Issues and logs are unavailable.</strong>
-              <span>{payload.sources.cloudflareIssues.detail}</span>
+              <span>Cloudflare Issues/log details are not integrated in this stage.</span>
             </div>
           </section>
 
@@ -404,7 +403,7 @@ export default function SystemHealthPage() {
             <div className={styles.architectureGrid}>
               <ArchitectureItem label="WEB" source={payload.sources.web} detail="Next.js Platform Console" />
               <ArchitectureItem label="WORKER" source={payload.sources.worker} detail="student2gate-api" />
-              <ArchitectureItem label="FIRESTORE" source={payload.sources.firestoreMetrics} detail="Operations via Cloud Monitoring" />
+              <ArchitectureItem label="FIRESTORE" source={payload.sources.firestore} detail="One bounded Platform Owner record read; connectivity only" />
               <ArchitectureItem label="AUTH" source={payload.sources.firebaseAuth} detail="Session verification" />
               <ArchitectureItem label="DURABLE OBJECT" source={payload.sources.durableObjects} detail="TeacherMutationCoordinator configured; live telemetry unavailable" />
               <ArchitectureItem label="KV &amp; LIMITERS" source={payload.sources.kv} detail="KV-backed limits configured; live telemetry unavailable" />
@@ -412,21 +411,20 @@ export default function SystemHealthPage() {
           </section>
 
           <section className={styles.thresholdPanel} aria-labelledby="threshold-heading">
-            <div><p className={styles.eyebrow}>Server-side alert rules</p><h2 id="threshold-heading">Monitoring thresholds</h2></div>
+            <div><p className={styles.eyebrow}>Server-side alert rules</p><h2 id="threshold-heading">Worker alert thresholds</h2></div>
             <ul>
               <li>Worker error rate above {HEALTH_THRESHOLDS.worker.warningErrorRatePercent}% for 5 minutes → warning</li>
               <li>Worker error rate above {HEALTH_THRESHOLDS.worker.criticalErrorRatePercent}% for 5 minutes → critical</li>
               <li>Worker failures ≥ {HEALTH_THRESHOLDS.worker.warningFailures} / {HEALTH_THRESHOLDS.worker.criticalFailures} in 5 minutes → warning / critical</li>
-              <li>Firestore service errors ≥ {HEALTH_THRESHOLDS.firestore.warningFailures} / {HEALTH_THRESHOLDS.firestore.criticalFailures} in 5 minutes → warning / critical</li>
-              <li>Firestore p95 latency ≥ {HEALTH_THRESHOLDS.firestore.warningP95LatencyMs} / {HEALTH_THRESHOLDS.firestore.criticalP95LatencyMs} ms → warning / critical</li>
+              <li>Firestore reports connectivity and single-read latency only; database usage thresholds are not collected.</li>
             </ul>
-            <p>Worker and database thresholds are distinct from missing-source states. An unavailable source can never produce an all-systems-operational banner.</p>
+            <p>A provider with unavailable telemetry cannot produce an all-systems-operational banner.</p>
           </section>
         </>
       ) : (
         <section className={styles.emptyState} role="status">
-          <strong>Monitoring data temporarily unavailable</strong>
-          <p>The last request did not return a safe monitoring snapshot. Automatic refresh continues every 30 seconds.</p>
+          <strong>System Health data temporarily unavailable</strong>
+          <p>The last request did not return a safe health snapshot. Automatic refresh continues every 30 seconds.</p>
         </section>
       )}
 
@@ -447,7 +445,7 @@ export default function SystemHealthPage() {
               <div><dt>First sampled</dt><dd>{formattedDate(selectedError.firstOccurrence)}</dd></div>
               <div><dt>Last sampled</dt><dd>{formattedDate(selectedError.lastOccurrence)}</dd></div>
               <div><dt>Occurrence count</dt><dd>{formatNumber(selectedError.count)}</dd></div>
-              <div><dt>Status</dt><dd>Observed in provider metrics; resolution state unavailable.</dd></div>
+              <div><dt>Status</dt><dd>Observed in aggregate Worker metrics; resolution state unavailable.</dd></div>
             </dl>
             <p className={styles.dataCaveat}>Raw logs, stack traces, request IDs, and user data are not included in this detail view.</p>
           </section>

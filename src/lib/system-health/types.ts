@@ -1,10 +1,6 @@
 import type { TimeRange } from './config';
 
-export type HealthState =
-  | 'healthy'
-  | 'warning'
-  | 'critical'
-  | 'unavailable';
+export type HealthState = 'healthy' | 'warning' | 'critical' | 'unavailable';
 
 export type HealthSource = {
   status: HealthState;
@@ -12,11 +8,12 @@ export type HealthSource = {
   checkedAt: string | null;
 };
 
+export type FirestoreHealthSource = HealthSource & { latencyMs: number | null };
 export type ErrorSeverity = 'critical' | 'warning' | 'info';
 
-export type MonitoringError = {
+export type SystemHealthError = {
   id: string;
-  service: 'Student2Gate Worker' | 'Firestore';
+  service: 'Student2Gate Worker';
   severity: ErrorSeverity;
   errorType: string;
   message: string;
@@ -35,8 +32,7 @@ export type SystemHealthPayload = {
   sources: {
     web: HealthSource;
     worker: HealthSource;
-    firestore: HealthSource;
-    firestoreMetrics: HealthSource;
+    firestore: FirestoreHealthSource;
     firebaseAuth: HealthSource;
     vercel: HealthSource;
     cloudflareIssues: HealthSource;
@@ -54,17 +50,6 @@ export type SystemHealthPayload = {
       requestsPerMinute: number | null;
       recentErrorCount: number | null;
     };
-    firestore: {
-      reads: number | null;
-      writes: number | null;
-      deletes: number | null;
-      apiRequests: number | null;
-      apiSuccesses: number | null;
-      apiErrors: number | null;
-      errorRatePercent: number | null;
-      p95LatencyMs: number | null;
-      recentErrorCount: number | null;
-    };
   };
   deployment: {
     environment: string | null;
@@ -76,11 +61,7 @@ export type SystemHealthPayload = {
     deployedAt: string | null;
     workerVersion: string | null;
   };
-  errors: MonitoringError[];
+  errors: SystemHealthError[];
   unavailableSources: string[];
-  configuredRateLimits: Array<{
-    name: string;
-    requests: number;
-    periodSeconds: number;
-  }>;
+  configuredRateLimits: Array<{ name: string; requests: number; periodSeconds: number }>;
 };

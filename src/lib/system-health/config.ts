@@ -1,8 +1,7 @@
 export const SYSTEM_HEALTH_REFRESH_INTERVAL_MS = 30_000;
 export const SYSTEM_HEALTH_SERVER_CACHE_TTL_MS = 15_000;
-export const MONITORING_SAMPLE_PERIOD_SECONDS = 60;
-export const MONITORING_MAX_PUBLICATION_DELAY_MS = 4 * 60_000;
-export const MONITORING_STALE_AFTER_MS = 10 * 60_000;
+export const PROVIDER_METRIC_MAX_DELAY_MS = 4 * 60_000;
+export const PROVIDER_METRIC_STALE_AFTER_MS = 10 * 60_000;
 
 export const TIME_RANGES = {
   '5m': { label: '5 minutes', seconds: 5 * 60 },
@@ -19,16 +18,5 @@ export const HEALTH_THRESHOLDS = {
     criticalErrorRatePercent: 5,
     warningFailures: 5,
     criticalFailures: 25,
-  },
-  firestore: {
-    warningErrorRatePercent: 1,
-    criticalErrorRatePercent: 5,
-    warningFailures: 3,
-    criticalFailures: 10,
-    warningP95LatencyMs: 1_000,
-    criticalP95LatencyMs: 3_000,
-  },
-  monitoring: {
-    staleAfterMs: MONITORING_STALE_AFTER_MS,
   },
 } as const;

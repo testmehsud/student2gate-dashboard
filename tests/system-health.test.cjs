@@ -18,28 +18,22 @@ require.extensions['.ts'] = (module, filename) => {
 };
 
 const {
-  evaluateFirestoreHealth,
+  evaluateMetricSampleHealth,
   evaluateOverallHealth,
-  evaluateMonitoringSampleHealth,
   evaluateWorkerHealth,
-  filterMonitoringErrors,
-  isMonitoringDataStale,
-  safeResponseCode,
+  filterSystemHealthErrors,
+  isProviderMetricStale,
 } = require('../src/lib/system-health/model.ts');
-
-const {
-  buildCloudMonitoringParams,
-  queryCloudflareWorker,
-  queryVercelProductionDeployment,
-} = require('../src/lib/system-health/providers.ts');
+const { checkFirestoreHealth, readPlatformOwnerHealthRecord } = require('../src/lib/system-health/firestore-health.ts');
+const { queryCloudflareWorker, queryVercelProductionDeployment } = require('../src/lib/system-health/providers.ts');
 
 function errorRow(overrides = {}) {
   return {
-    id: 'firestore-unavailable',
-    service: 'Firestore',
+    id: 'worker-runtime-error',
+    service: 'Student2Gate Worker',
     severity: 'warning',
-    errorType: 'Service unavailable',
-    message: 'Firestore API returned service unavailable responses.',
+    errorType: 'Worker threw an exception',
+    message: 'Worker threw an exception',
     count: 2,
     firstOccurrence: '2026-10-06T10:00:00.000Z',
     lastOccurrence: '2026-10-06T10:05:00.000Z',
@@ -47,72 +41,6 @@ function errorRow(overrides = {}) {
     ...overrides,
   };
 }
-
-test('all monitored sources healthy produces healthy state', () => {
-  assert.equal(evaluateOverallHealth(['healthy', 'healthy', 'healthy']), 'healthy');
-});
-
-test('one warning source produces warning state', () => {
-  assert.equal(evaluateOverallHealth(['healthy', 'warning', 'healthy']), 'warning');
-  assert.equal(evaluateWorkerHealth(1_000, 11), 'warning');
-  assert.equal(evaluateFirestoreHealth(1.2, 0, null), 'warning');
-});
-
-test('critical worker and database thresholds produce critical state', () => {
-  assert.equal(evaluateWorkerHealth(1_000, 51), 'critical');
-  assert.equal(evaluateFirestoreHealth(6, 0, null), 'critical');
-  assert.equal(evaluateFirestoreHealth(null, 10, null), 'critical');
-  assert.equal(evaluateFirestoreHealth(null, 0, 3_000), 'critical');
-});
-
-test('missing sources never produce healthy state', () => {
-  assert.equal(evaluateOverallHealth(['healthy', 'unavailable', 'healthy']), 'unavailable');
-  assert.equal(evaluateWorkerHealth(null, null), 'unavailable');
-  assert.equal(evaluateFirestoreHealth(null, null, null), 'unavailable');
-});
-
-test('stale or missing monitoring samples are unavailable', () => {
-  const now = Date.parse('2026-10-06T10:10:00.000Z');
-  assert.equal(isMonitoringDataStale('2026-10-06T10:00:00.000Z', now), false);
-  assert.equal(isMonitoringDataStale('2026-10-06T09:59:00.000Z', now), true);
-  assert.equal(isMonitoringDataStale(null, now), true);
-  assert.equal(isMonitoringDataStale('invalid', now), true);
-});
-
-test('provider response codes are reduced to safe allowlisted labels', () => {
-  assert.deepEqual(safeResponseCode('PERMISSION_DENIED'), {
-    key: 'permission_denied',
-    label: 'Permission denied',
-    severity: 'warning',
-  });
-  const unknown = safeResponseCode('Bearer secret-token-value');
-  assert.equal(unknown.label, 'Other response');
-  assert.equal(unknown.key, 'other');
-  assert.equal(JSON.stringify(unknown).includes('secret-token-value'), false);
-});
-
-test('recent error filters sort, filter, and cap results', () => {
-  const rows = Array.from({ length: 30 }, (_, index) => {
-    const minute = String(5 + index).padStart(2, '0');
-    return errorRow({
-      id: `row-${index}`,
-      lastOccurrence: `2026-10-06T10:${minute}:00.000Z`,
-    });
-  });
-  rows.push(errorRow({
-    id: 'critical',
-    severity: 'critical',
-    service: 'Student2Gate Worker',
-    lastOccurrence: '2026-10-06T11:00:00.000Z',
-  }));
-
-  const filtered = filterMonitoringErrors(rows, 'Firestore', 'warning');
-  assert.equal(filtered.length, 25);
-  assert.ok(filtered.every((row) => row.service === 'Firestore' && row.severity === 'warning'));
-  assert.equal(filtered[0].id, 'row-29');
-  assert.equal(filtered.at(-1).id, 'row-5');
-  assert.equal(filterMonitoringErrors(rows, 'Student2Gate Worker', 'critical')[0].id, 'critical');
-});
 
 function mockResponse(body, status = 200) {
   return {
@@ -122,21 +50,147 @@ function mockResponse(body, status = 200) {
   };
 }
 
-test('Cloudflare Worker Analytics request scopes account, Worker, metrics, and UTC interval', async () => {
+test('all available checks healthy stays healthy without database usage metrics', () => {
+  const firestore = { status: 'healthy', detail: 'Connectivity check succeeded.', latencyMs: 42, checkedAt: '2026-10-06T10:00:00.000Z' };
+  assert.equal(firestore.status, 'healthy');
+  assert.equal(firestore.latencyMs, 42);
+  assert.equal(evaluateOverallHealth(['healthy', 'healthy', firestore.status, 'healthy', 'healthy']), 'healthy');
+  const types = fs.readFileSync(require.resolve('../src/lib/system-health/types.ts'), 'utf8');
+  assert.doesNotMatch(types, /firestoreMetrics|reads: number \| null|p95LatencyMs/);
+});
+
+test('warning and critical connected provider states are preserved', () => {
+  assert.equal(evaluateOverallHealth(['healthy', 'warning', 'healthy']), 'warning');
+  assert.equal(evaluateOverallHealth(['healthy', 'critical', 'warning']), 'critical');
+  assert.equal(evaluateWorkerHealth(1_000, 11), 'warning');
+  assert.equal(evaluateWorkerHealth(1_000, 51), 'critical');
+});
+
+test('unavailable Firestore, Worker, or Vercel checks cannot appear healthy', () => {
+  assert.equal(evaluateOverallHealth(['healthy', 'unavailable', 'healthy']), 'unavailable');
+  assert.equal(evaluateOverallHealth(['healthy', 'healthy', 'unavailable']), 'unavailable');
+  assert.equal(evaluateWorkerHealth(null, null), 'unavailable');
+});
+
+test('mixed provider states retain critical and unavailable priority', () => {
+  assert.equal(evaluateOverallHealth(['healthy', 'warning', 'unavailable']), 'unavailable');
+  assert.equal(evaluateOverallHealth(['critical', 'unavailable']), 'critical');
+});
+
+test('Worker sample freshness distinguishes fresh, delayed, stale, and confirmed no traffic', () => {
+  const now = Date.parse('2026-10-06T10:10:00.000Z');
+  assert.equal(isProviderMetricStale('2026-10-06T10:00:00.000Z', now), false);
+  assert.equal(isProviderMetricStale('2026-10-06T09:59:00.000Z', now), true);
+  assert.equal(isProviderMetricStale(null, now), true);
+  assert.equal(isProviderMetricStale('invalid', now), true);
+  assert.equal(evaluateMetricSampleHealth('2026-10-06T10:08:00.000Z', now), 'healthy');
+  assert.equal(evaluateMetricSampleHealth('2026-10-06T10:05:00.000Z', now), 'warning');
+  assert.equal(evaluateMetricSampleHealth('2026-10-06T09:59:00.000Z', now), 'unavailable');
+  assert.equal(evaluateMetricSampleHealth(null, now, true), 'healthy');
+  assert.equal(evaluateMetricSampleHealth(null, now, false), 'unavailable');
+});
+
+test('Firestore reads exactly one existing Platform Owner document and returns measured latency only', async () => {
+  const calls = { collection: [], doc: [], reads: 0, fields: [] };
+  const db = {
+    collection(name) {
+      calls.collection.push(name);
+      return {
+        doc(uid) {
+          calls.doc.push(uid);
+          return {
+            async get() {
+              calls.reads += 1;
+              return {
+                exists: true,
+                get(field) {
+                  calls.fields.push(field);
+                  return field === 'status' ? 'ACTIVE' : 'private-user-value';
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  const times = [100, 142];
+  const read = readPlatformOwnerHealthRecord(db, 'verified-owner-uid');
+  const result = await checkFirestoreHealth(read, {
+    monotonicNow: () => times.shift(),
+    dateNow: () => new Date('2026-10-06T10:00:00.000Z'),
+  });
+  assert.deepEqual(calls, { collection: ['platformAdmins'], doc: ['verified-owner-uid'], reads: 1, fields: ['status'] });
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.latencyMs, 42);
+  assert.equal(result.checkedAt, '2026-10-06T10:00:00.000Z');
+  assert.equal(JSON.stringify(result).includes('private-user-value'), false);
+});
+
+test('Firestore errors and timeouts are unavailable with sanitized reasons', async () => {
+  const failed = await checkFirestoreHealth(async () => {
+    const error = new Error('Bearer secret-token private email');
+    error.code = 14;
+    throw error;
+  });
+  assert.equal(failed.status, 'unavailable');
+  assert.equal(failed.detail, 'Firestore is temporarily unavailable.');
+  assert.equal(failed.latencyMs, null);
+  assert.doesNotMatch(JSON.stringify(failed), /secret-token|private email|Bearer/);
+
+  const timedOut = await checkFirestoreHealth(() => new Promise(() => {}), { timeoutMs: 2 });
+  assert.equal(timedOut.status, 'unavailable');
+  assert.equal(timedOut.detail, 'Firestore health check timed out.');
+});
+
+test('Firestore permissions errors are mapped to a safe reason', async () => {
+  const result = await checkFirestoreHealth(async () => {
+    const error = new Error('raw permissions detail');
+    error.code = 7;
+    throw error;
+  });
+  assert.equal(result.detail, 'Firestore access was denied.');
+  assert.doesNotMatch(JSON.stringify(result), /raw permissions detail/);
+});
+
+test('Firestore health check issues no HTTP or Cloud Monitoring request', async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => { calls += 1; throw new Error('unexpected network request'); };
+  try {
+    const result = await checkFirestoreHealth(async () => ({ exists: true }));
+    assert.equal(result.status, 'healthy');
+    assert.equal(calls, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('error center filtering sorts and caps sanitized Worker groups', () => {
+  const rows = Array.from({ length: 30 }, (_, index) => {
+    const minute = String(5 + index).padStart(2, '0');
+    return errorRow({ id: `row-${index}`, lastOccurrence: `2026-10-06T10:${minute}:00.000Z` });
+  });
+  rows.push(errorRow({ id: 'critical', severity: 'critical', lastOccurrence: '2026-10-06T11:00:00.000Z' }));
+  const filtered = filterSystemHealthErrors(rows, 'Student2Gate Worker', 'warning');
+  assert.equal(filtered.length, 25);
+  assert.equal(filtered[0].id, 'row-29');
+  assert.equal(filtered.at(-1).id, 'row-5');
+  assert.equal(filterSystemHealthErrors(rows, 'Student2Gate Worker', 'critical')[0].id, 'critical');
+});
+
+test('Cloudflare Worker request uses configured account, script, and bounded UTC interval', async () => {
   const start = '2026-10-06T10:00:00.000Z';
   const end = '2026-10-06T10:05:00.000Z';
   let request;
   const result = await queryCloudflareWorker({
-    start, end, accountId: 'account-id', workerName: 'student2gate-api',
-    token: 'server-only-token',
+    start, end, accountId: 'account-id', workerName: 'student2gate-api', token: 'server-only-token',
     fetcher: async (url, init) => {
       request = { url: String(url), init };
-      return mockResponse({
-        data: { viewer: { accounts: [{ workersInvocationsAdaptive: [{
-          sum: { requests: 12, errors: 1 },
-          dimensions: { datetime: '2026-10-06T10:04:00.000Z', scriptName: 'student2gate-api', status: 'scriptThrewException' },
-        }] }] } },
-      });
+      return mockResponse({ data: { viewer: { accounts: [{ workersInvocationsAdaptive: [{
+        sum: { requests: 12, errors: 1 },
+        dimensions: { datetime: '2026-10-06T10:04:00.000Z', scriptName: 'student2gate-api', status: 'scriptThrewException' },
+      }] }] } } });
     },
   });
   assert.equal(result.error, null);
@@ -154,101 +208,58 @@ test('Cloudflare Worker Analytics request scopes account, Worker, metrics, and U
   assert.match(body.query, /datetime_lt: \$end/);
 });
 
-test('Cloudflare HTTP 200 GraphQL errors are unavailable and sanitized', async () => {
-  const result = await queryCloudflareWorker({
-    start: '2026-10-06T10:00:00Z',
-    end: '2026-10-06T10:05:00Z',
-    accountId: 'account-id',
-    token: 'must-not-leak',
+test('Cloudflare GraphQL errors and HTTP failures are unavailable and sanitized', async () => {
+  const queryError = await queryCloudflareWorker({
+    start: '2026-10-06T10:00:00Z', end: '2026-10-06T10:05:00Z', accountId: 'account-id', token: 'must-not-leak',
     fetcher: async () => mockResponse({ data: null, errors: [{ message: 'must-not-leak' }] }),
   });
-  assert.equal(result.rows.length, 0);
-  assert.match(result.error, /rejected/);
-  assert.equal(result.error.includes('must-not-leak'), false);
+  assert.equal(queryError.rows.length, 0);
+  assert.match(queryError.error, /rejected/);
+  assert.equal(queryError.error.includes('must-not-leak'), false);
+
+  const httpError = await queryCloudflareWorker({
+    start: '2026-10-06T10:00:00Z', end: '2026-10-06T10:05:00Z', accountId: 'account-id', token: 'must-not-leak',
+    fetcher: async () => mockResponse({}, 403),
+  });
+  assert.match(httpError.error, /HTTP 403/);
+  assert.doesNotMatch(httpError.error, /must-not-leak/);
 });
 
-test('Cloudflare successful empty result is zero recent traffic, not provider outage', async () => {
+test('Cloudflare empty result means confirmed zero recent traffic, not a provider error', async () => {
   const result = await queryCloudflareWorker({
-    start: '2026-10-06T10:00:00Z',
-    end: '2026-10-06T10:05:00Z',
-    accountId: 'account-id',
-    token: 'server-only-token',
-    fetcher: async () => mockResponse({
-      data: { viewer: { accounts: [{ workersInvocationsAdaptive: [] }] } },
-    }),
+    start: '2026-10-06T10:00:00Z', end: '2026-10-06T10:05:00Z', accountId: 'account-id', token: 'server-only-token',
+    fetcher: async () => mockResponse({ data: { viewer: { accounts: [{ workersInvocationsAdaptive: [] }] } } }),
   });
   assert.deepEqual(result, { rows: [], error: null });
+  assert.equal(evaluateMetricSampleHealth(null, Date.parse('2026-10-06T10:05:00Z'), result.error === null), 'healthy');
   assert.equal(evaluateWorkerHealth(0, 0), 'healthy');
 });
 
-test('Cloudflare stale samples remain unavailable', () => {
-  const now = Date.parse('2026-10-06T10:10:00.000Z');
-  assert.equal(evaluateMonitoringSampleHealth('2026-10-06T09:59:00.000Z', now), 'unavailable');
-});
-
-test('Firestore query uses Database resource, default database, UTC interval, and DELTA SUM aggregation', () => {
-  const start = '2026-10-06T09:55:00.000Z';
-  const end = '2026-10-06T10:00:00.000Z';
-  const params = buildCloudMonitoringParams(
-    'firestore.googleapis.com/api/request_count', start, end, 60, true,
-  );
-  assert.match(params.get('filter'), /firestore.googleapis.com\/Database/);
-  assert.match(params.get('filter'), /resource.labels.database_id = "\(default\)"/);
-  assert.match(params.get('filter'), /firestore.googleapis.com\/api\/request_count/);
-  assert.equal(params.get('interval.startTime'), start);
-  assert.equal(params.get('interval.endTime'), end);
-  assert.equal(params.get('aggregation.alignmentPeriod'), '60s');
-  assert.equal(params.get('aggregation.perSeriesAligner'), 'ALIGN_SUM');
-  assert.equal(params.get('aggregation.crossSeriesReducer'), 'REDUCE_SUM');
-  assert.equal(params.get('aggregation.groupByFields'), 'metric.labels.response_code');
-});
-
-test('Firestore latency query preserves percentile aggregation', () => {
-  const params = buildCloudMonitoringParams(
-    'firestore.googleapis.com/api/request_latencies',
-    '2026-10-06T09:55:00Z',
-    '2026-10-06T10:00:00Z',
-    60,
-  );
-  assert.equal(params.get('aggregation.perSeriesAligner'), 'ALIGN_PERCENTILE_95');
-  assert.equal(params.get('aggregation.crossSeriesReducer'), 'REDUCE_PERCENTILE_95');
-});
-
-test('Firestore fresh, delayed, stale, and zero-traffic samples are distinct', () => {
-  const now = Date.parse('2026-10-06T10:10:00.000Z');
-  assert.equal(evaluateMonitoringSampleHealth('2026-10-06T10:06:00.000Z', now), 'healthy');
-  assert.equal(evaluateMonitoringSampleHealth('2026-10-06T10:04:00.000Z', now), 'warning');
-  assert.equal(evaluateMonitoringSampleHealth('2026-10-06T09:59:00.000Z', now), 'unavailable');
-  assert.equal(evaluateMonitoringSampleHealth(null, now, true), 'healthy');
-  assert.equal(evaluateMonitoringSampleHealth(null, now, false), 'unavailable');
+test('Cloudflare malformed empty account and stale sample are not reported healthy', async () => {
+  const malformed = await queryCloudflareWorker({
+    start: '2026-10-06T10:00:00Z', end: '2026-10-06T10:05:00Z', accountId: 'account-id', token: 'token',
+    fetcher: async () => mockResponse({ data: { viewer: { accounts: [] } } }),
+  });
+  assert.match(malformed.error, /no accessible account/);
+  assert.equal(evaluateMetricSampleHealth('2026-10-06T09:59:00.000Z', Date.parse('2026-10-06T10:10:00.000Z')), 'unavailable');
 });
 
 test('Vercel provider returns only safe production deployment fields server-side', async () => {
   let request;
   const result = await queryVercelProductionDeployment({
-    token: 'server-only-token',
-    projectId: 'configured-project-id',
-    teamId: 'configured-team-id',
+    token: 'server-only-token', projectId: 'configured-project-id', teamId: 'configured-team-id',
     fetcher: async (url, init) => {
       request = { url: new URL(String(url)), init };
       return mockResponse({ deployments: [{
-        uid: 'dpl_safe-id',
-        readyState: 'READY',
-        createdAt: Date.parse('2026-10-06T10:00:00Z'),
-        target: 'production',
-        url: 'student2gate-dashboard.vercel.app',
-        meta: { githubCommitSha: 'a'.repeat(40) },
+        uid: 'dpl_safe-id', readyState: 'READY', createdAt: Date.parse('2026-10-06T10:00:00Z'),
+        target: 'production', url: 'student2gate-dashboard.vercel.app', meta: { githubCommitSha: 'a'.repeat(40) },
       }] });
     },
   });
   assert.equal(result.error, null);
   assert.deepEqual(result.deployment, {
-    deploymentId: 'dpl_safe-id',
-    state: 'READY',
-    commit: 'a'.repeat(40),
-    createdAt: '2026-10-06T10:00:00.000Z',
-    target: 'production',
-    url: 'https://student2gate-dashboard.vercel.app',
+    deploymentId: 'dpl_safe-id', state: 'READY', commit: 'a'.repeat(40),
+    createdAt: '2026-10-06T10:00:00.000Z', target: 'production', url: 'https://student2gate-dashboard.vercel.app',
   });
   assert.equal(request.url.searchParams.get('projectId'), 'configured-project-id');
   assert.equal(request.url.searchParams.get('teamId'), 'configured-team-id');
@@ -258,45 +269,82 @@ test('Vercel provider returns only safe production deployment fields server-side
   assert.equal(JSON.stringify(result).includes('server-only-token'), false);
 });
 
-test('missing Vercel credential and provider API failures are sanitized', async () => {
+test('missing Vercel credential and provider failures are sanitized', async () => {
   const missing = await queryVercelProductionDeployment({ projectId: 'configured-project-id' });
   assert.equal(missing.deployment, null);
-  assert.match(missing.error, /VERCEL_ACCESS_TOKEN/);
+  assert.match(missing.error, /Vercel API credential/);
+  assert.doesNotMatch(missing.error, /VERCEL_ACCESS_TOKEN/);
   const failed = await queryVercelProductionDeployment({
-    token: 'must-not-leak',
-    projectId: 'configured-project-id',
-    fetcher: async () => mockResponse({}, 403),
+    token: 'must-not-leak', projectId: 'configured-project-id', fetcher: async () => mockResponse({}, 403),
   });
   assert.equal(failed.deployment, null);
   assert.match(failed.error, /HTTP 403/);
-  assert.equal(failed.error.includes('must-not-leak'), false);
+  assert.doesNotMatch(failed.error, /must-not-leak/);
 });
 
-test('provider loss remains unavailable even when another provider is healthy', () => {
-  assert.equal(evaluateOverallHealth(['healthy', 'unavailable']), 'unavailable');
-  assert.equal(evaluateOverallHealth(['healthy', 'healthy']), 'healthy');
+test('no Google Cloud Monitoring adapter, request, or billing permission remains in System Health', () => {
+  const files = [
+    '../src/app/api/platform/system-health/route.ts',
+    '../src/lib/system-health/providers.ts',
+    '../src/lib/system-health/model.ts',
+    '../src/lib/system-health/config.ts',
+  ].map((file) => fs.readFileSync(path.resolve(__dirname, file), 'utf8')).join('\n');
+  assert.doesNotMatch(files, /monitoring\.googleapis\.com|timeSeries|monitoring\.timeSeries\.list|monitoring\.viewer|Cloud Monitoring/i);
 });
 
-test('client page and public response types never contain provider credentials', () => {
+test('health route is Platform Owner-only and ignores intentionally unavailable optional telemetry', () => {
+  const route = fs.readFileSync(require.resolve('../src/app/api/platform/system-health/route.ts'), 'utf8');
+  const authIndex = route.indexOf('platformAdmin = await requirePlatformAdmin()');
+  const payloadIndex = route.indexOf('await buildPayload(range, platformAdmin.uid)');
+  assert.ok(authIndex >= 0 && payloadIndex > authIndex);
+  assert.match(route, /Platform Owner access required\./);
+  assert.match(route, /Platform Owner session verification succeeded\./);
+  assert.match(route, /Firebase Authentication usage metrics are not exposed/);
+  const globalIndex = route.indexOf('const globalStatus = evaluateOverallHealth([');
+  const globalEnd = route.indexOf(']);', globalIndex);
+  const states = globalIndex >= 0 && globalEnd > globalIndex ? route.slice(globalIndex, globalEnd) : '';
+  assert.match(states, /firestoreSource\.status/);
+  assert.doesNotMatch(states, /cloudflareIssues|durableObjects|kvSource|rateLimitsSource/);
+  assert.match(route, /No recent Worker traffic/);
+  assert.doesNotMatch(route, /workerFallback|Monitoring/);
+});
+
+test('public System Health response and client assets exclude secrets and Firestore user data', () => {
   const page = fs.readFileSync(require.resolve('../src/app/dashboard/system-health/page.tsx'), 'utf8');
   const types = fs.readFileSync(require.resolve('../src/lib/system-health/types.ts'), 'utf8');
-  assert.doesNotMatch(page, /VERCEL_ACCESS_TOKEN|CLOUDFLARE_API_TOKEN/);
-  assert.doesNotMatch(types, /token\??:|apiKey\??:/i);
+  const firestoreHealth = fs.readFileSync(require.resolve('../src/lib/system-health/firestore-health.ts'), 'utf8');
+  assert.doesNotMatch(page, /VERCEL_ACCESS_TOKEN|CLOUDFLARE_API_TOKEN|FIREBASE_SERVICE_ACCOUNT/);
+  assert.doesNotMatch(types, /token\??:|apiKey\??:|private_key|FIREBASE_SERVICE_ACCOUNT/);
+  assert.match(firestoreHealth, /collection\('platformAdmins'\)[\s\S]*?\.doc\(platformOwnerUid\)[\s\S]*?\.get\(\)/);
+  assert.doesNotMatch(firestoreHealth, /students|parents|teachers|platformAuditLog|where\(|limit\(/i);
+
+  const sourceFiles = path.resolve(__dirname, '../src');
+  const pendingSource = [sourceFiles];
+  while (pendingSource.length) {
+    const directory = pendingSource.pop();
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) pendingSource.push(entryPath);
+      else if (entry.isFile() && /\.(?:ts|tsx|js|jsx)$/.test(entry.name)) {
+        const source = fs.readFileSync(entryPath, 'utf8');
+        assert.doesNotMatch(source, /NEXT_PUBLIC_(?:VERCEL_ACCESS_TOKEN|CLOUDFLARE_API_TOKEN|FIREBASE_SERVICE_ACCOUNT)/);
+      }
+    }
+  }
 
   const clientAssets = path.resolve(__dirname, '../.next/static');
   if (fs.existsSync(clientAssets)) {
     const pending = [clientAssets];
-    const bundles = [];
-    while (pending.length > 0) {
-      for (const entry of fs.readdirSync(pending.pop(), { withFileTypes: true })) {
-        const entryPath = path.join(entry.parentPath ?? clientAssets, entry.name);
+    while (pending.length) {
+      const directory = pending.pop();
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const entryPath = path.join(directory, entry.name);
         if (entry.isDirectory()) pending.push(entryPath);
-        else if (entry.isFile() && entry.name.endsWith('.js')) bundles.push(entryPath);
+        else if (entry.isFile() && entry.name.endsWith('.js')) {
+          const source = fs.readFileSync(entryPath, 'utf8');
+          assert.doesNotMatch(source, /VERCEL_ACCESS_TOKEN|CLOUDFLARE_API_TOKEN|FIREBASE_SERVICE_ACCOUNT_JSON/);
+        }
       }
-    }
-    for (const bundle of bundles) {
-      const source = fs.readFileSync(bundle, 'utf8');
-      assert.doesNotMatch(source, /VERCEL_ACCESS_TOKEN|CLOUDFLARE_API_TOKEN|FIREBASE_SERVICE_ACCOUNT_JSON/);
     }
   }
 });

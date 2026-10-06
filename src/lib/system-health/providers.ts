@@ -84,8 +84,8 @@ export async function queryVercelProductionDeployment(options: {
   const projectId = options.projectId?.trim();
   const teamId = options.teamId?.trim();
   const fetcher = options.fetcher ?? fetch;
-  if (!token) return { deployment: null, error: 'VERCEL_ACCESS_TOKEN is not configured on the server.' };
-  if (!projectId) return { deployment: null, error: 'VERCEL_PROJECT_ID is not available in this Vercel project runtime.' };
+  if (!token) return { deployment: null, error: 'Vercel API credential is not configured on the server.' };
+  if (!projectId) return { deployment: null, error: 'Vercel project information is not available in this runtime.' };
   const url = new URL('https://api.vercel.com/v6/deployments');
   url.searchParams.set('projectId', projectId);
   url.searchParams.set('target', 'production');
@@ -129,35 +129,4 @@ export async function queryVercelProductionDeployment(options: {
   } catch {
     return { deployment: null, error: 'Vercel deployment history could not be reached.' };
   }
-}
-
-export function buildCloudMonitoringParams(
-  metricType: string,
-  start: string,
-  end: string,
-  alignmentSeconds: number,
-  groupByResponseCode = false,
-) {
-  const isDistribution = metricType === 'firestore.googleapis.com/api/request_latencies';
-  const params = new URLSearchParams({
-    filter: firestoreMetricFilter(metricType),
-    'interval.startTime': start,
-    'interval.endTime': end,
-    'aggregation.alignmentPeriod': alignmentSeconds + 's',
-    'aggregation.perSeriesAligner': isDistribution ? 'ALIGN_PERCENTILE_95' : 'ALIGN_SUM',
-    'aggregation.crossSeriesReducer': isDistribution ? 'REDUCE_PERCENTILE_95' : 'REDUCE_SUM',
-    view: 'FULL',
-    pageSize: '100',
-  });
-  if (groupByResponseCode) params.append('aggregation.groupByFields', 'metric.labels.response_code');
-  return params;
-}
-export function firestoreMetricFilter(metricType: string, databaseId = '(default)') {
-  const escapedDatabaseId = databaseId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const parts = [
-    `metric.type = "${metricType}"`,
-    'resource.type = "firestore.googleapis.com/Database"',
-    `resource.labels.database_id = "${escapedDatabaseId}"`,
-  ];
-  return parts.join(' AND ');
 }
