@@ -1,4 +1,4 @@
-﻿import { HEALTH_THRESHOLDS, MONITORING_STALE_AFTER_MS } from './config';
+import { HEALTH_THRESHOLDS, MONITORING_MAX_PUBLICATION_DELAY_MS, MONITORING_STALE_AFTER_MS } from './config';
 import type { HealthState, MonitoringError } from './types';
 
 export function evaluateWorkerHealth(
@@ -46,12 +46,23 @@ export function evaluateFirestoreHealth(
   return 'healthy';
 }
 
+export function evaluateMonitoringSampleHealth(
+  sampledAt: string | null,
+  now = Date.now(),
+  noTrafficConfirmed = false,
+): HealthState {
+  if (!sampledAt) return noTrafficConfirmed ? 'healthy' : 'unavailable';
+  const sampleTime = Date.parse(sampledAt);
+  if (!Number.isFinite(sampleTime) || isMonitoringDataStale(sampledAt, now)) return 'unavailable';
+  return now - sampleTime > MONITORING_MAX_PUBLICATION_DELAY_MS ? 'warning' : 'healthy';
+}
+
 export function evaluateOverallHealth(
   states: HealthState[],
 ): HealthState {
   if (states.includes('critical')) return 'critical';
-  if (states.includes('warning')) return 'warning';
   if (states.includes('unavailable')) return 'unavailable';
+  if (states.includes('warning')) return 'warning';
   return 'healthy';
 }
 

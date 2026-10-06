@@ -1,4 +1,4 @@
-﻿import type { TimeRange } from './config';
+import type { TimeRange } from './config';
 
 export type HealthState =
   | 'healthy'
@@ -40,6 +40,9 @@ export type SystemHealthPayload = {
     firebaseAuth: HealthSource;
     vercel: HealthSource;
     cloudflareIssues: HealthSource;
+    durableObjects: HealthSource;
+    kv: HealthSource;
+    rateLimits: HealthSource;
   };
   metrics: {
     worker: {
@@ -65,6 +68,8 @@ export type SystemHealthPayload = {
   };
   deployment: {
     environment: string | null;
+    target: string | null;
+    state: string | null;
     commit: string | null;
     deploymentId: string | null;
     deploymentUrl: string | null;

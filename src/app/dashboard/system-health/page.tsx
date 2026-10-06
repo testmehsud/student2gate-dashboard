@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -261,8 +261,10 @@ export default function SystemHealthPage() {
             </ServiceCard>
             <ServiceCard title="Production deployment" subtitle="VERCEL" source={payload.sources.vercel}>
               <div className={styles.cardFootnote}>
-                {payload.deployment.commit ? `Commit ${payload.deployment.commit.slice(0, 12)}` : 'Commit unavailable'}
-                {payload.deployment.deployedAt ? ` · deployed ${formattedDate(payload.deployment.deployedAt)}` : ' · deploy time unavailable'}
+                {payload.deployment.state ?? 'State unavailable'}
+                {' | '}{payload.deployment.target ?? 'Production target unavailable'}
+                {' | '}{payload.deployment.commit ? 'Commit ' + payload.deployment.commit.slice(0, 12) : 'Commit unavailable'}
+                {payload.deployment.deployedAt ? ' | created ' + formattedDate(payload.deployment.deployedAt) : ' | deploy time unavailable'}
               </div>
             </ServiceCard>
           </section>
@@ -369,10 +371,12 @@ export default function SystemHealthPage() {
                 <div><p className={styles.eyebrow}>Release context</p><h2 id="deployment-heading">Current production</h2></div>
               </div>
               <dl className={styles.detailList}>
-                <div><dt>Environment</dt><dd>{payload.deployment.environment ?? 'Unavailable'}</dd></div>
+                <div><dt>Production target</dt><dd>{payload.deployment.target ?? 'Unavailable'}</dd></div>
+                <div><dt>Deployment state</dt><dd>{payload.deployment.state ?? 'Unavailable'}</dd></div>
                 <div><dt>Application commit</dt><dd className={styles.mono}>{payload.deployment.commit ?? 'Unavailable'}</dd></div>
                 <div><dt>Vercel deployment</dt><dd className={styles.mono}>{payload.deployment.deploymentId ?? 'Unavailable'}</dd></div>
-                <div><dt>Deployment time</dt><dd>{formattedDate(payload.deployment.deployedAt)}</dd></div>
+                <div><dt>Created / deployed</dt><dd>{formattedDate(payload.deployment.deployedAt)}</dd></div>
+                <div><dt>Deployment URL</dt><dd>{payload.deployment.deploymentUrl ? <a href={payload.deployment.deploymentUrl} target="_blank" rel="noreferrer">{payload.deployment.deploymentUrl}</a> : 'Unavailable'}</dd></div>
                 <div><dt>Worker version</dt><dd>{payload.deployment.workerVersion ?? 'Unavailable'}</dd></div>
               </dl>
               <p className={styles.dataCaveat}>{payload.sources.vercel.detail}</p>
@@ -381,15 +385,15 @@ export default function SystemHealthPage() {
             <section className={styles.panel} aria-labelledby="limits-heading">
               <div className={styles.sectionHeader}>
                 <div><p className={styles.eyebrow}>Abuse controls</p><h2 id="limits-heading">Rate limit health</h2></div>
-                <span className={styles.statePill + ' ' + styles.state_unavailable}>Rejections unavailable</span>
+                <StatePill source={payload.sources.rateLimits} />
               </div>
-              <p className={styles.sectionDescription}>Checked-in Worker configuration snapshot; values are not fetched from the deployed Worker.</p>
+              <p className={styles.sectionDescription}>Known checked-in configuration; live deployment and rejection telemetry are unavailable.</p>
               <div className={styles.limitList}>
                 {payload.configuredRateLimits.map((limit) => (
                   <div key={limit.name}><span>{limit.name}</span><strong>{limit.requests} / {limit.periodSeconds}s</strong></div>
                 ))}
               </div>
-              <p className={styles.dataCaveat}>Recent rejected requests and live deployed limits are not exposed by the currently connected metrics source.</p>
+              <p className={styles.dataCaveat}>The listed limits are configured in source. Live deployed thresholds and rejection counts are unavailable.</p>
             </section>
           </div>
 
@@ -402,8 +406,8 @@ export default function SystemHealthPage() {
               <ArchitectureItem label="WORKER" source={payload.sources.worker} detail="student2gate-api" />
               <ArchitectureItem label="FIRESTORE" source={payload.sources.firestoreMetrics} detail="Operations via Cloud Monitoring" />
               <ArchitectureItem label="AUTH" source={payload.sources.firebaseAuth} detail="Session verification" />
-              <ArchitectureItem label="DURABLE OBJECT" source={payload.sources.worker} detail="Teacher mutation coordination" />
-              <ArchitectureItem label="KV &amp; LIMITERS" source={payload.sources.worker} detail="KV-backed limits · 7 configured limiters" />
+              <ArchitectureItem label="DURABLE OBJECT" source={payload.sources.durableObjects} detail="TeacherMutationCoordinator configured; live telemetry unavailable" />
+              <ArchitectureItem label="KV &amp; LIMITERS" source={payload.sources.kv} detail="KV-backed limits configured; live telemetry unavailable" />
             </div>
           </section>
 

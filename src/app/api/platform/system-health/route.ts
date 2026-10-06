@@ -1,9 +1,10 @@
-﻿import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 import { getAdminAccessToken, getFirebaseProjectId } from '@/lib/firebase-admin';
 import { requirePlatformAdmin } from '@/lib/platform-auth';
 import {
   MONITORING_SAMPLE_PERIOD_SECONDS,
+  MONITORING_MAX_PUBLICATION_DELAY_MS,
   SYSTEM_HEALTH_SERVER_CACHE_TTL_MS,
   TIME_RANGES,
   type TimeRange,
@@ -11,10 +12,17 @@ import {
 import {
   evaluateFirestoreHealth,
   evaluateOverallHealth,
+  evaluateMonitoringSampleHealth,
   evaluateWorkerHealth,
   isMonitoringDataStale,
   safeResponseCode,
 } from '@/lib/system-health/model';
+import {
+  buildCloudMonitoringParams,
+  queryCloudflareWorker as queryCloudflareWorkerProvider,
+  queryVercelProductionDeployment,
+  type WorkerMetricRow,
+} from '@/lib/system-health/providers';
 import type {
   HealthSource,
   MonitoringError,
@@ -76,10 +84,6 @@ type MonitoringResult = {
   error: string | null;
 };
 
-type WorkerMetricRow = {
-  sum?: { requests?: number | string; errors?: number | string };
-  dimensions?: { datetime?: string; status?: string };
-};
 
 function json(body: unknown, status = 200): NextResponse {
   return NextResponse.json(body, {
@@ -125,12 +129,15 @@ function sumSeries(series: TimeSeries[] | null): number | null {
 
 function lastSeriesValue(series: TimeSeries[] | null): number | null {
   if (!series) return null;
-  const values = series.flatMap((timeSeries) =>
-    (timeSeries.points ?? []).map(pointValue).filter(
-      (value): value is number => value !== null,
+  const latest = series.flatMap((timeSeries) =>
+    (timeSeries.points ?? []).map((point) => ({
+      timestamp: point.interval?.endTime ?? null,
+      value: pointValue(point),
+    })).filter((point): point is { timestamp: string; value: number } =>
+      point.timestamp !== null && point.value !== null,
     ),
-  );
-  return values.length > 0 ? values[values.length - 1] : null;
+  ).sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp));
+  return latest[0]?.value ?? null;
 }
 
 function source(
@@ -142,10 +149,14 @@ function source(
 }
 
 function windowFor(range: TimeRange, now: number) {
+  return windowForSeconds(TIME_RANGES[range].seconds, now);
+}
+
+function windowForSeconds(seconds: number, now: number) {
   return {
-    start: new Date(now - TIME_RANGES[range].seconds * 1_000).toISOString(),
+    start: new Date(now - seconds * 1_000).toISOString(),
     end: new Date(now).toISOString(),
-    seconds: TIME_RANGES[range].seconds,
+    seconds,
   };
 }
 
@@ -164,23 +175,7 @@ async function queryCloudMonitoring(
   }
 
   const accessToken = await getAdminAccessToken();
-  const params = new URLSearchParams({
-    filter: `metric.type = "${metricType}"`,
-    'interval.startTime': start,
-    'interval.endTime': end,
-    'aggregation.alignmentPeriod': `${alignmentSeconds}s`,
-    'aggregation.perSeriesAligner': metricType === FIRESTORE_METRICS.apiLatency
-      ? 'ALIGN_PERCENTILE_95'
-      : 'ALIGN_SUM',
-    'aggregation.crossSeriesReducer': metricType === FIRESTORE_METRICS.apiLatency
-      ? 'REDUCE_PERCENTILE_95'
-      : 'REDUCE_SUM',
-    view: 'FULL',
-    pageSize: '100',
-  });
-  if (groupByResponseCode) {
-    params.append('aggregation.groupByFields', 'metric.labels.response_code');
-  }
+  const params = buildCloudMonitoringParams(metricType, start, end, alignmentSeconds, groupByResponseCode);
 
   const response = await fetch(
     `https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(projectId)}/timeSeries?${params.toString()}`,
@@ -260,88 +255,15 @@ function aggregateResponseCodes(series: TimeSeries[] | null) {
   return [...groups.values()];
 }
 
-function workerRequestBody(start: string, end: string, accountId: string, workerName: string) {
-  return {
-    query: `query WorkerInvocations {
-      viewer {
-        accounts(filter: { accountTag: ${JSON.stringify(accountId)} }) {
-          workersInvocationsAdaptive(limit: 10000, filter: {
-            scriptName: ${JSON.stringify(workerName)},
-            datetime_geq: ${JSON.stringify(start)},
-            datetime_leq: ${JSON.stringify(end)}
-          }) {
-            sum { requests errors }
-            dimensions { datetime scriptName status }
-          }
-        }
-      }
-    }`,
-  };
+function queryCloudflareWorker(start: string, end: string) {
+  return queryCloudflareWorkerProvider({
+    start,
+    end,
+    accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+    token: process.env.CLOUDFLARE_API_TOKEN,
+    workerName: process.env.CLOUDFLARE_WORKER_NAME || WORKER_NAME,
+  });
 }
-
-async function queryCloudflareWorker(
-  start: string,
-  end: string,
-): Promise<{ rows: WorkerMetricRow[]; error: string | null }> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const token = process.env.CLOUDFLARE_API_TOKEN;
-  const missing = [
-    !accountId ? 'CLOUDFLARE_ACCOUNT_ID' : null,
-    !token ? 'CLOUDFLARE_API_TOKEN' : null,
-  ].filter((value): value is string => !!value);
-  if (missing.length > 0 || !accountId || !token) {
-    return {
-      rows: [],
-      error: `Missing server environment variable${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}.`,
-    };
-  }
-
-  const workerName = process.env.CLOUDFLARE_WORKER_NAME || WORKER_NAME;
-  try {
-    const response = await fetch('https://api.cloudflare.com/client/v4/graphql', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(workerRequestBody(start, end, accountId, workerName)),
-      cache: 'no-store',
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!response.ok) {
-      return {
-        rows: [],
-        error: `Cloudflare Analytics returned HTTP ${response.status}. Check the token's Account Analytics:Read permission.`,
-      };
-    }
-
-    const result = await response.json() as {
-      data?: {
-        viewer?: {
-          accounts?: Array<{ workersInvocationsAdaptive?: WorkerMetricRow[] }>;
-        };
-      };
-      errors?: unknown[] | null;
-    };
-    if (result.errors?.length || !result.data?.viewer) {
-      return {
-        rows: [],
-        error: 'Cloudflare rejected the Workers Analytics query. Check Account Analytics:Read access and the configured Worker name.',
-      };
-    }
-    const rows = result.data.viewer.accounts?.[0]?.workersInvocationsAdaptive;
-    return Array.isArray(rows)
-      ? { rows, error: null }
-      : { rows: [], error: 'Cloudflare returned no Workers Analytics result.' };
-  } catch {
-    return {
-      rows: [],
-      error: 'Cloudflare Analytics could not be reached. Check the account token and network access.',
-    };
-  }
-}
-
 function summarizeWorkerRows(rows: WorkerMetricRow[]) {
   let requests = 0;
   let errors = 0;
@@ -438,12 +360,6 @@ function firestoreErrors(
     .slice(0, MAX_ERROR_ROWS);
 }
 
-function missingMonitoringReason(results: MonitoringResult[]) {
-  const firstError = results.find((result) => result.error)?.error;
-  if (firstError) return firstError;
-  return 'Cloud Monitoring returned no samples in this time range. Firestore metrics are sampled every 60 seconds and can take up to 4 minutes to appear.';
-}
-
 function configuredRateLimits() {
   return [
     { name: 'Teacher reads', requests: 20, periodSeconds: 60 },
@@ -458,39 +374,57 @@ function configuredRateLimits() {
 
 async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
   const generatedAt = new Date().toISOString();
-  const rangeWindow = windowFor(range, Date.now());
-  const recentWindow = windowFor('5m', Date.now());
-  const [workerSelected, workerRecent] = await Promise.all([
-    queryCloudflareWorker(rangeWindow.start, rangeWindow.end),
-    range === '5m' ? Promise.resolve(null) : queryCloudflareWorker(recentWindow.start, recentWindow.end),
-  ]);
+  const now = Date.now();
+  const rangeWindow = windowFor(range, now);
+  const recentWindow = windowFor('5m', now);
+  const firestoreRangeWindow = windowFor(range, now - MONITORING_MAX_PUBLICATION_DELAY_MS);
+  const firestoreRecentWindow = windowFor('5m', now - MONITORING_MAX_PUBLICATION_DELAY_MS);
+  const firestoreFallbackWindow = windowForSeconds(15 * 60, now - MONITORING_MAX_PUBLICATION_DELAY_MS);
+
+  const workerSelected = await queryCloudflareWorker(rangeWindow.start, rangeWindow.end);
+  const workerRecent = range === '5m'
+    ? workerSelected
+    : await queryCloudflareWorker(recentWindow.start, recentWindow.end);
+  const recentWorker = summarizeWorkerRows(workerRecent.rows);
+  const workerRecentRows = workerRecent.rows;
+  const workerNeedsFallback = workerSelected.error === null &&
+    workerRecent.error === null && workerRecentRows.length === 0 &&
+    range !== '24h' && range !== '7d';
+  const workerFallback = workerNeedsFallback
+    ? await queryCloudflareWorker(
+      windowFor('24h', now).start,
+      windowFor('24h', now).end,
+    )
+    : null;
+  const workerMetricError = workerSelected.error ?? workerRecent.error ??
+    workerFallback?.error ?? null;
   const selectedWorker = summarizeWorkerRows(workerSelected.rows);
-  const recentWorker = range === '5m' ? selectedWorker : summarizeWorkerRows(workerRecent?.rows ?? []);
-  const workerAlertHealth = evaluateWorkerHealth(
-    workerRecent?.error ? null : recentWorker.requests,
-    workerRecent?.error ? null : recentWorker.errors,
-  );
-  const recentWorkerRows = range === '5m' ? workerSelected.rows : workerRecent?.rows ?? [];
-  const workerLatestAt = recentWorkerRows
+  const workerLatestAt = workerRecentRows
     .map((row) => row.dimensions?.datetime)
     .filter((value): value is string => !!value)
-    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
-  const workerDataStale = isMonitoringDataStale(workerLatestAt, Date.parse(generatedAt));
-  const workerMetricHealth = workerSelected.error || workerRecent?.error || workerSelected.rows.length === 0 || workerDataStale
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ??
+    workerFallback?.rows
+      .map((row) => row.dimensions?.datetime)
+      .filter((value): value is string => !!value)
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ??
+    null;
+  const workerRecentHasSample = workerRecentRows.length > 0;
+  const workerDataStale = workerRecentHasSample &&
+    isMonitoringDataStale(workerLatestAt, now);
+  const workerAlertHealth = workerMetricError
+    ? 'unavailable'
+    : evaluateWorkerHealth(recentWorker.requests, recentWorker.errors);
+  const workerMetricHealth = workerMetricError || workerDataStale
     ? 'unavailable'
     : workerAlertHealth;
-  const workerSourceDetail = workerSelected.error ?? (
+  const workerSourceDetail = workerMetricError ?? (
     workerDataStale
       ? 'Latest Cloudflare Worker metric sample is older than the 10-minute freshness threshold.'
-      : workerSelected.rows.length === 0
-        ? 'Cloudflare returned no Worker invocation samples for this period.'
-        : `${selectedWorker.requests.toLocaleString()} Worker requests in the selected period.`
+      : !workerRecentHasSample
+        ? 'No recent Worker traffic. Cloudflare returned a valid empty metrics result for the selected short range.'
+        : selectedWorker.requests.toLocaleString() + ' Worker requests in the selected period.'
   );
-  const workerSource = source(
-    workerMetricHealth,
-    workerSourceDetail,
-    workerLatestAt,
-  );
+  const workerSource = source(workerMetricHealth, workerSourceDetail, workerLatestAt);
 
   const monitoringAuth = await Promise.allSettled([
     getFirebaseProjectId(),
@@ -510,6 +444,8 @@ async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
     latency: MonitoringResult;
     recentErrors: MonitoringResult;
     recentLatency: MonitoringResult;
+    fallbackRequests: MonitoringResult;
+    fallbackLatency: MonitoringResult;
   };
 
   if (monitoringAuthFailed || monitoringProjectMissing) {
@@ -521,23 +457,27 @@ async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
       latency: failedResult,
       recentErrors: failedResult,
       recentLatency: failedResult,
+      fallbackRequests: failedResult,
+      fallbackLatency: failedResult,
     };
   } else {
-
     const [reads, writes, deletes, requests, latency] = await Promise.all([
-      safeMonitoringQuery(FIRESTORE_METRICS.reads, rangeWindow.start, rangeWindow.end, rangeWindow.seconds),
-      safeMonitoringQuery(FIRESTORE_METRICS.writes, rangeWindow.start, rangeWindow.end, rangeWindow.seconds),
-      safeMonitoringQuery(FIRESTORE_METRICS.deletes, rangeWindow.start, rangeWindow.end, rangeWindow.seconds),
-      safeMonitoringQuery(FIRESTORE_METRICS.apiRequests, rangeWindow.start, rangeWindow.end, rangeWindow.seconds, true),
-      safeMonitoringQuery(FIRESTORE_METRICS.apiLatency, rangeWindow.start, rangeWindow.end, rangeWindow.seconds),
+      safeMonitoringQuery(FIRESTORE_METRICS.reads, firestoreRangeWindow.start, firestoreRangeWindow.end, rangeWindow.seconds),
+      safeMonitoringQuery(FIRESTORE_METRICS.writes, firestoreRangeWindow.start, firestoreRangeWindow.end, rangeWindow.seconds),
+      safeMonitoringQuery(FIRESTORE_METRICS.deletes, firestoreRangeWindow.start, firestoreRangeWindow.end, rangeWindow.seconds),
+      safeMonitoringQuery(FIRESTORE_METRICS.apiRequests, firestoreRangeWindow.start, firestoreRangeWindow.end, rangeWindow.seconds, true),
+      safeMonitoringQuery(FIRESTORE_METRICS.apiLatency, firestoreRangeWindow.start, firestoreRangeWindow.end, rangeWindow.seconds),
     ]);
-    const recentErrors = range === '5m'
-      ? requests
-      : await safeMonitoringQuery(FIRESTORE_METRICS.apiRequests, recentWindow.start, recentWindow.end, MONITORING_SAMPLE_PERIOD_SECONDS, true);
-    const recentLatency = range === '5m'
-      ? latency
-      : await safeMonitoringQuery(FIRESTORE_METRICS.apiLatency, recentWindow.start, recentWindow.end, TIME_RANGES['5m'].seconds);
-    firestoreResults = { reads, writes, deletes, requests, latency, recentErrors, recentLatency };
+    const [recentErrors, recentLatency, fallbackRequests, fallbackLatency] = await Promise.all([
+      safeMonitoringQuery(FIRESTORE_METRICS.apiRequests, firestoreRecentWindow.start, firestoreRecentWindow.end, MONITORING_SAMPLE_PERIOD_SECONDS, true),
+      safeMonitoringQuery(FIRESTORE_METRICS.apiLatency, firestoreRecentWindow.start, firestoreRecentWindow.end, MONITORING_SAMPLE_PERIOD_SECONDS),
+      safeMonitoringQuery(FIRESTORE_METRICS.apiRequests, firestoreFallbackWindow.start, firestoreFallbackWindow.end, MONITORING_SAMPLE_PERIOD_SECONDS, true),
+      safeMonitoringQuery(FIRESTORE_METRICS.apiLatency, firestoreFallbackWindow.start, firestoreFallbackWindow.end, MONITORING_SAMPLE_PERIOD_SECONDS),
+    ]);
+    firestoreResults = {
+      reads, writes, deletes, requests, latency,
+      recentErrors, recentLatency, fallbackRequests, fallbackLatency,
+    };
   }
 
   const reads = sumSeries(firestoreResults.reads.series);
@@ -578,27 +518,46 @@ async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
   );
 
   const metricResults = Object.values(firestoreResults);
-  const hasFirestoreSamples = metricResults.some(
-    (result) => result.series && result.series.length > 0,
-  );
-  const allFirestoreMetricsPresent = [
+  const providerError = metricResults.find((result) => result.error)?.error ?? null;
+  const selectedMetricResults = [
     firestoreResults.reads,
     firestoreResults.writes,
     firestoreResults.deletes,
     firestoreResults.requests,
     firestoreResults.latency,
-    firestoreResults.recentErrors,
-    firestoreResults.recentLatency,
-  ].every((result) => result.series !== null && result.error === null && result.series.length > 0);
-  const firestoreMetricDetail = !hasFirestoreSamples
-    ? missingMonitoringReason(metricResults)
-    : allFirestoreMetricsPresent
-      ? 'Cloud Monitoring returned Firestore operation, request, and latency samples. Values are sampled and delayed.'
-      : 'Some Firestore metric types have no samples or are not accessible. Missing values remain unavailable, not zero.';
-  const latestFirestoreSample = metricTimestamp(firestoreResults.recentErrors.series);
-  const firestoreMetricsStale = isMonitoringDataStale(latestFirestoreSample, Date.parse(generatedAt));
+  ];
+  const hasSelectedSamples = selectedMetricResults.some(
+    (result) => result.series && result.series.length > 0,
+  );
+  const hasFallbackSamples = [
+    firestoreResults.fallbackRequests,
+    firestoreResults.fallbackLatency,
+  ].some((result) => result.series && result.series.length > 0);
+  const latestFirestoreSample = metricTimestamp(metricResults.flatMap(
+    (result) => result.series ?? [],
+  ));
+  const firestoreSampleHealth = evaluateMonitoringSampleHealth(
+    latestFirestoreSample,
+    now,
+    !latestFirestoreSample && !providerError,
+  );
+  const firestoreMetricsStale = latestFirestoreSample !== null &&
+    firestoreSampleHealth === 'unavailable';
+  const firestoreMetricsDelayed = firestoreSampleHealth === 'warning';
+  const firestoreMetricDetail = providerError ?? (
+    !hasSelectedSamples && !hasFallbackSamples
+      ? 'No recent Firestore traffic. Cloud Monitoring queries succeeded but returned no samples in the 15-minute verification window.'
+      : firestoreMetricsDelayed
+        ? 'Firestore telemetry is delayed but remains within the 10-minute freshness limit. Samples are aligned to complete 60-second periods.'
+        : hasSelectedSamples
+          ? 'Cloud Monitoring returned recent Firestore samples. Empty metric families remain unavailable rather than being counted as zero.'
+          : 'Firestore activity is present in the fallback window; the selected period has no recent traffic.'
+  );
+  const firestoreMetricsStatus = providerError || firestoreMetricsStale
+    ? 'unavailable'
+    : firestoreMetricsDelayed ? 'warning' : firestoreMetricHealth;
   const firestoreMetricsSource = source(
-    !hasFirestoreSamples || !allFirestoreMetricsPresent || firestoreMetricsStale ? 'unavailable' : firestoreMetricHealth,
+    firestoreMetricsStatus,
     firestoreMetricsStale
       ? 'Latest Firestore Cloud Monitoring sample is older than the 10-minute freshness threshold.'
       : firestoreMetricDetail,
@@ -612,36 +571,53 @@ async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
     .sort((left, right) => Date.parse(right.lastOccurrence ?? '') - Date.parse(left.lastOccurrence ?? ''))
     .slice(0, MAX_ERROR_ROWS);
 
+  const vercelResult = await queryVercelProductionDeployment({
+    token: process.env.VERCEL_ACCESS_TOKEN,
+    projectId: process.env.VERCEL_PROJECT_ID,
+    teamId: process.env.VERCEL_TEAM_ID || process.env.VERCEL_ORG_ID,
+  });
   const deployment = {
-    environment: process.env.VERCEL_ENV || null,
-    commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
-    deploymentId: process.env.VERCEL_DEPLOYMENT_ID || null,
-    deploymentUrl: process.env.VERCEL_URL || null,
-    deployedAt: null,
+    environment: vercelResult.deployment?.target ?? null,
+    target: vercelResult.deployment?.target ?? null,
+    state: vercelResult.deployment?.state ?? null,
+    commit: vercelResult.deployment?.commit ?? null,
+    deploymentId: vercelResult.deployment?.deploymentId ?? null,
+    deploymentUrl: vercelResult.deployment?.url ?? null,
+    deployedAt: vercelResult.deployment?.createdAt ?? null,
     workerVersion: null,
   };
-
-  const missingCloudflare = [
-    !process.env.CLOUDFLARE_ACCOUNT_ID ? 'CLOUDFLARE_ACCOUNT_ID' : null,
-    !process.env.CLOUDFLARE_API_TOKEN ? 'CLOUDFLARE_API_TOKEN' : null,
-  ].filter((value): value is string => !!value);
-  const cloudflareIssues = source(
-    'unavailable',
-    missingCloudflare.length > 0
-      ? `Missing server environment variables: ${missingCloudflare.join(', ')}. The current Worker config enables Observability, but does not configure Workers Logs or Issues queries.`
-      : 'Aggregate invocation metrics are queried separately. Workers Issues and log details are not integrated in this stage.',
-    null,
+  const vercelSource = source(
+    vercelResult.error
+      ? 'unavailable'
+      : deployment.state === 'READY' ? 'healthy'
+        : deployment.state === 'ERROR' || deployment.state === 'CANCELED' ? 'critical'
+          : 'warning',
+    vercelResult.error ?? (
+      'Production deployment ' + (deployment.state ?? 'state unavailable') +
+      (deployment.commit ? '; commit ' + deployment.commit : '; commit unavailable') +
+      (deployment.deployedAt ? '; created ' + deployment.deployedAt : '')
+    ),
+    deployment.deployedAt,
   );
 
-  const vercelMissing = [
-    !process.env.VERCEL_ACCESS_TOKEN ? 'VERCEL_ACCESS_TOKEN' : null,
-    !process.env.VERCEL_PROJECT_ID ? 'VERCEL_PROJECT_ID' : null,
-  ].filter((value): value is string => !!value);
-  const vercelSource = source(
+  const cloudflareIssues = source(
     'unavailable',
-    vercelMissing.length > 0
-      ? `Missing server environment variables: ${vercelMissing.join(', ')}. Current production deployment details cannot be queried.`
-      : 'The Vercel deployment history provider is not connected in this stage.',
+    'Aggregate Worker invocation metrics use the configured Worker-scoped observability access. Raw Worker logs and traces are not queried or exposed; the Issues/log query is not integrated.',
+    null,
+  );
+  const durableObjectsSource = source(
+    'unavailable',
+    'TeacherMutationCoordinator  configured; live Durable Object telemetry is unavailable in this dashboard.',
+    null,
+  );
+  const kvSource = source(
+    'unavailable',
+    'KV-backed rate limits  configured; live KV telemetry is unavailable in this dashboard.',
+    null,
+  );
+  const rateLimitsSource = source(
+    'unavailable',
+    'Rate-limit configuration is checked in; live deployed limits and rejection telemetry are unavailable.',
     null,
   );
 
@@ -669,24 +645,30 @@ async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
     authSource.status,
     vercelSource.status,
     cloudflareIssues.status,
+    durableObjectsSource.status,
+    kvSource.status,
+    rateLimitsSource.status,
   ]);
   const reasons: string[] = [];
   if (workerAlertHealth === 'critical') {
-    reasons.push(`Worker error threshold exceeded in the last 5 minutes (${recentWorker.errors} failures from ${recentWorker.requests} requests).`);
+    reasons.push('Worker error threshold exceeded in the last 5 minutes (' + recentWorker.errors + ' failures from ' + recentWorker.requests + ' requests).');
   } else if (workerAlertHealth === 'warning') {
-    reasons.push(`Worker error rate is elevated in the last 5 minutes (${recentWorker.errors} failures from ${recentWorker.requests} requests).`);
+    reasons.push('Worker error rate is elevated in the last 5 minutes (' + recentWorker.errors + ' failures from ' + recentWorker.requests + ' requests).');
   }
   if (firestoreMetricHealth === 'critical') {
-    reasons.push(`Firestore failure count or p95 latency exceeded its critical threshold in the last 5 minutes (${recentErrorCount} service errors).`);
+    reasons.push('Firestore failure count or p95 latency exceeded its critical threshold in the last 5 minutes (' + recentErrorCount + ' service errors).');
   } else if (firestoreMetricHealth === 'warning') {
-    reasons.push(`Firestore failure count or p95 latency exceeded its warning threshold in the last 5 minutes (${recentErrorCount} service errors).`);
+    reasons.push('Firestore failure count or p95 latency exceeded its warning threshold in the last 5 minutes (' + recentErrorCount + ' service errors).');
   }
 
   const unavailableSources: string[] = [];
-  if (workerSource.status === 'unavailable') unavailableSources.push(`Worker metrics: ${workerSource.detail}`);
-  if (firestoreMetricsSource.status === 'unavailable') unavailableSources.push(`Firestore metrics: ${firestoreMetricsSource.detail}`);
-  if (vercelSource.status === 'unavailable') unavailableSources.push(`Vercel deployment data: ${vercelSource.detail}`);
-  if (cloudflareIssues.status === 'unavailable') unavailableSources.push(`Cloudflare Issues/logs: ${cloudflareIssues.detail}`);
+  if (workerSource.status === 'unavailable') unavailableSources.push('Worker metrics: ' + workerSource.detail);
+  if (firestoreMetricsSource.status === 'unavailable') unavailableSources.push('Firestore metrics: ' + firestoreMetricsSource.detail);
+  if (vercelSource.status === 'unavailable') unavailableSources.push('Vercel deployment data: ' + vercelSource.detail);
+  if (cloudflareIssues.status === 'unavailable') unavailableSources.push('Cloudflare Issues/logs: ' + cloudflareIssues.detail);
+  if (durableObjectsSource.status === 'unavailable') unavailableSources.push('Durable Object metrics: ' + durableObjectsSource.detail);
+  if (kvSource.status === 'unavailable') unavailableSources.push('KV metrics: ' + kvSource.detail);
+  if (rateLimitsSource.status === 'unavailable') unavailableSources.push('Rate-limit telemetry: ' + rateLimitsSource.detail);
   if (reasons.length === 0 && unavailableSources.length > 0) reasons.push(...unavailableSources);
 
   const statusReason = reasons.length > 0
@@ -709,20 +691,23 @@ async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
       firebaseAuth: authSource,
       vercel: vercelSource,
       cloudflareIssues,
+      durableObjects: durableObjectsSource,
+      kv: kvSource,
+      rateLimits: rateLimitsSource,
     },
     metrics: {
       worker: {
-        requests: workerSelected.error || workerSelected.rows.length === 0 ? null : selectedWorker.requests,
-        successes: workerSelected.error || workerSelected.rows.length === 0 ? null : Math.max(selectedWorker.requests - selectedWorker.errors, 0),
-        errors: workerSelected.error || workerSelected.rows.length === 0 ? null : selectedWorker.errors,
-        errorRatePercent: workerSelected.error || workerSelected.rows.length === 0 || selectedWorker.requests === 0
+        requests: workerSelected.error ? null : selectedWorker.requests,
+        successes: workerSelected.error ? null : Math.max(selectedWorker.requests - selectedWorker.errors, 0),
+        errors: workerSelected.error ? null : selectedWorker.errors,
+        errorRatePercent: workerSelected.error || selectedWorker.requests === 0
           ? null
           : (selectedWorker.errors / selectedWorker.requests) * 100,
         cpuP99: null,
-        requestsPerMinute: workerSelected.error || workerSelected.rows.length === 0
+        requestsPerMinute: workerSelected.error
           ? null
           : selectedWorker.requests / (rangeWindow.seconds / 60),
-        recentErrorCount: workerRecent?.error ? null : recentWorker.errors,
+        recentErrorCount: workerRecent.error ? null : recentWorker.errors,
       },
       firestore: {
         reads,
@@ -742,7 +727,6 @@ async function buildPayload(range: TimeRange): Promise<SystemHealthPayload> {
     configuredRateLimits: configuredRateLimits(),
   };
 }
-
 export async function GET(request: NextRequest) {
   try {
     await requirePlatformAdmin();
