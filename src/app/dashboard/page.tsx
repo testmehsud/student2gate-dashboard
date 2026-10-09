@@ -10,11 +10,13 @@ import {
 import { useRouter } from 'next/navigation';
 import ManageSchoolModal from './components/manage-school-modal';
 import ManageSchoolAdminModal from './components/manage-school-admin-modal';
+import DataDeletionRequests from './components/data-deletion-requests';
 type Section =
   | 'Overview'
   | 'Schools'
   | 'School Admins'
-  | 'Audit Log';
+  | 'Audit Log'
+  | 'Deletion Requests';
 
 type DashboardIconName =
   | 'overview'
@@ -26,7 +28,8 @@ type DashboardIconName =
   | 'attention'
   | 'bell'
   | 'menu'
-  | 'close';
+  | 'close'
+  | 'deletion';
 
 type LiveSchool = {
   schoolId: string;
@@ -74,6 +77,7 @@ const navItems: { label: Section | 'System Health'; icon: DashboardIconName }[] 
   { label: 'Schools', icon: 'schools' },
   { label: 'School Admins', icon: 'admins' },
   { label: 'Audit Log', icon: 'audit' },
+  { label: 'Deletion Requests', icon: 'deletion' },
   { label: 'System Health', icon: 'health' },
 ];
 
@@ -110,6 +114,12 @@ function DashboardIcon({
     ),
     health: (
       <path d='M3 12h4l2.3-6 4.5 12 2.2-6H21' />
+    ),
+    deletion: (
+      <>
+        <path d='M7 3.5h7l4 4V20H7z' />
+        <path d='M14 3.5V8h4M10 12h5M10 15.5h5' />
+      </>
     ),
     students: (
       <>
@@ -508,6 +518,8 @@ export default function Home() {
         {section === 'Audit Log' && (
           <AuditLog schools={liveSchools} />
         )}
+        {section === 'Deletion Requests' && <DataDeletionRequests />}
+
       </section>
 
       {selectedSchool && (
