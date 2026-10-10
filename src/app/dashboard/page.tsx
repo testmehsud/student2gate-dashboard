@@ -527,6 +527,7 @@ export default function Home() {
 
       {selectedSchool && (
         <ManageSchoolModal
+          key={selectedSchool.schoolId}
           school={selectedSchool}
           onClose={() =>
             setSelectedSchool(null)

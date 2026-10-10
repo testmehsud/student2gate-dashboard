@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from 'react';
 import { MANUAL_STUDENT_CAPACITY_OPTIONS } from '@/lib/student-capacity.mjs';
+import { buildManageSchoolPatch, getManageSchoolInitialName } from '@/lib/school-update';
 
 type ManageSchool = {
   schoolId: string;
@@ -32,6 +33,7 @@ export default function ManageSchoolModal({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [name, setName] = useState(() => getManageSchoolInitialName(school));
 
   async function request(
     action:
@@ -72,54 +74,27 @@ export default function ManageSchoolModal({
       if (action === 'update' && form) {
         const data = new FormData(form);
 
-        const numberValue = (name: string) => {
-          const raw = String(
-            data.get(name) ?? '',
-          ).trim();
-
+        const numberValue = (field: string) => {
+          const raw = String(data.get(field) ?? '').trim();
           return raw === '' ? null : Number(raw);
         };
 
-        body.name = String(
-          data.get('name') ?? '',
-        ).trim();
-
-        body.city = String(
-          data.get('city') ?? '',
-        ).trim();
-
-        body.timezone = String(
-          data.get('timezone') ?? '',
-        ).trim();
-
-        body.releaseEnabled =
-          data.get('releaseEnabled') === 'on';
-
-        body.pickupLatitude =
-          numberValue('pickupLatitude');
-
-        body.pickupLongitude =
-          numberValue('pickupLongitude');
-
-        body.pickupRadiusMeters =
-          numberValue('pickupRadiusMeters');
-
-        body.pickupRequestLifetimeMinutes =
-          numberValue(
-            'pickupRequestLifetimeMinutes',
-          );
-
-        body.pickupReleaseMinutesBeforeBell =
-          numberValue(
-            'pickupReleaseMinutesBeforeBell',
-          );
-
-        body.pickupSessionDurationMinutes =
-          numberValue(
-            'pickupSessionDurationMinutes',
-          );
-
-        body.studentLimit = numberValue('studentLimit');
+        Object.assign(
+          body,
+          buildManageSchoolPatch(school, {
+            name: name.trim(),
+            city: String(data.get('city') ?? '').trim(),
+            timezone: String(data.get('timezone') ?? '').trim(),
+            releaseEnabled: data.get('releaseEnabled') === 'on',
+            pickupLatitude: numberValue('pickupLatitude'),
+            pickupLongitude: numberValue('pickupLongitude'),
+            pickupRadiusMeters: numberValue('pickupRadiusMeters'),
+            pickupRequestLifetimeMinutes: numberValue('pickupRequestLifetimeMinutes'),
+            pickupReleaseMinutesBeforeBell: numberValue('pickupReleaseMinutesBeforeBell'),
+            pickupSessionDurationMinutes: numberValue('pickupSessionDurationMinutes'),
+            studentLimit: numberValue('studentLimit'),
+          }),
+        );
       }
 
       const response = await fetch(
@@ -247,7 +222,8 @@ export default function ManageSchoolModal({
 
                 <input
                   name="name"
-                  defaultValue={school.name}
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
                   required
                   maxLength={200}
                   disabled={

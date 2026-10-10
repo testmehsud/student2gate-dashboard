@@ -5,6 +5,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { getAdminDb } from '@/lib/firebase-admin';
 import { requirePlatformAdmin } from '@/lib/platform-auth';
 import { parseManualStudentLimit, validateManualStudentCapacity } from '@/lib/student-capacity.mjs';
+import { mergeManageSchoolPatch } from '@/lib/school-update';
 
 const CSRF_COOKIE = 's2g_csrf';
 
@@ -328,20 +329,6 @@ export async function PATCH(
       .collection('platformAuditLog')
       .doc(crypto.randomUUID());
 
-    const editableError =
-      action === 'update'
-        ? validateEditableFields(
-            body as Record<string, unknown>,
-          )
-        : null;
-
-    if (editableError) {
-      return json(
-        { error: 'invalid_school', message: editableError },
-        400,
-      );
-    }
-
     const result = await db.runTransaction(
       async (transaction) => {
         const schoolSnapshot =
@@ -409,7 +396,13 @@ export async function PATCH(
         let eventType = '';
 
         if (action === 'update') {
-          const studentLimit = parseManualStudentLimit(body.studentLimit);
+          const schoolUpdate = mergeManageSchoolPatch(current, body);
+          const editableError = validateEditableFields(schoolUpdate);
+          if (editableError) {
+            return { kind: 'invalid_school' as const, message: editableError };
+          }
+
+          const studentLimit = parseManualStudentLimit(schoolUpdate.studentLimit);
           let activeStudentCount = current.activeStudentCount;
           const currentLimit = current.studentLimit;
           const consistent = Number.isSafeInteger(currentLimit) && currentLimit > 0 && Number.isSafeInteger(activeStudentCount) && activeStudentCount >= 0 && activeStudentCount <= currentLimit;
@@ -420,23 +413,10 @@ export async function PATCH(
           const capacity = validateManualStudentCapacity(studentLimit, activeStudentCount);
           if (!capacity.ok) return { kind: 'capacity_invalid' as const, activeStudentCount };
           updateData = {
-            name: stringOrEmpty(body.name),
-            city: stringOrEmpty(body.city),
-            timezone: stringOrEmpty(body.timezone),
-            releaseEnabled: body.releaseEnabled,
-            pickupLatitude: body.pickupLatitude,
-            pickupLongitude: body.pickupLongitude,
-            pickupRadiusMeters: body.pickupRadiusMeters,
-            pickupRequestLifetimeMinutes:
-              body.pickupRequestLifetimeMinutes,
-            pickupReleaseMinutesBeforeBell:
-              body.pickupReleaseMinutesBeforeBell,
-            pickupSessionDurationMinutes:
-              body.pickupSessionDurationMinutes,
+            ...schoolUpdate,
             studentLimit: capacity.studentLimit,
             activeStudentCount: capacity.activeStudentCount,
-            updatedAt:
-              FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           };
           eventType = 'PLATFORM_SCHOOL_UPDATED';
         } else if (action === 'deactivate') {
@@ -500,6 +480,13 @@ export async function PATCH(
           message: 'The selected school does not exist.',
         },
         404,
+      );
+    }
+
+    if (result.kind === 'invalid_school') {
+      return json(
+        { error: 'invalid_school', message: result.message },
+        400,
       );
     }
 
