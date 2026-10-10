@@ -5,24 +5,9 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { getAdminDb } from '@/lib/firebase-admin';
 import { requirePlatformAdmin } from '@/lib/platform-auth';
 import { parseManualStudentLimit, validateManualStudentCapacity } from '@/lib/student-capacity.mjs';
-import { mergeManageSchoolPatch } from '@/lib/school-update';
+import { getSchoolConfigurationIssues, mergeManageSchoolPatch, selectManageSchoolPatch, serializeManageSchool } from '@/lib/school-update';
 
 const CSRF_COOKIE = 's2g_csrf';
-
-const MAX_NAME_LENGTH = 200;
-const MAX_CITY_LENGTH = 100;
-
-const MIN_PICKUP_RADIUS_METERS = 1;
-const MAX_PICKUP_RADIUS_METERS = 5_000;
-
-const MIN_PICKUP_REQUEST_LIFETIME_MINUTES = 1;
-const MAX_PICKUP_REQUEST_LIFETIME_MINUTES = 180;
-
-const MIN_RELEASE_MINUTES_BEFORE_BELL = 0;
-const MAX_RELEASE_MINUTES_BEFORE_BELL = 60;
-
-const MIN_SESSION_DURATION_MINUTES = 1;
-const MAX_SESSION_DURATION_MINUTES = 240;
 
 const VALID_STATUS = new Set([
   'ACTIVE',
@@ -71,84 +56,11 @@ function stringOrEmpty(value: unknown): string {
     : '';
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isFinite(value)
-  );
-}
-
-function isInteger(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value)
-  );
-}
-
-function isValidTimezone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat('en-US', {
-      timeZone: value,
-    }).format();
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function serializeSchool(
-  snapshot: FirebaseFirestore.DocumentSnapshot,
-) {
-  const data = snapshot.data() ?? {};
-
-  return {
-    schoolId: snapshot.id,
-    name:
-      typeof data.name === 'string'
-        ? data.name
-        : '',
-    city:
-      typeof data.city === 'string'
-        ? data.city
-        : '',
-    status:
-      typeof data.status === 'string'
-        ? data.status
-        : '',
-    timezone:
-      typeof data.timezone === 'string'
-        ? data.timezone
-        : '',
-    releaseEnabled:
-      data.releaseEnabled === true,
-    pickupLatitude:
-      typeof data.pickupLatitude === 'number'
-        ? data.pickupLatitude
-        : null,
-    pickupLongitude:
-      typeof data.pickupLongitude === 'number'
-        ? data.pickupLongitude
-        : null,
-    pickupRadiusMeters:
-      typeof data.pickupRadiusMeters === 'number'
-        ? data.pickupRadiusMeters
-        : null,
-    pickupRequestLifetimeMinutes:
-      typeof data.pickupRequestLifetimeMinutes === 'number'
-        ? data.pickupRequestLifetimeMinutes
-        : null,
-    pickupReleaseMinutesBeforeBell:
-      typeof data.pickupReleaseMinutesBeforeBell === 'number'
-        ? data.pickupReleaseMinutesBeforeBell
-        : null,
-    pickupSessionDurationMinutes:
-      typeof data.pickupSessionDurationMinutes === 'number'
-        ? data.pickupSessionDurationMinutes
-        : null,
-    studentLimit: Number.isSafeInteger(data.studentLimit) ? data.studentLimit : null,
-    activeStudentCount: Number.isSafeInteger(data.activeStudentCount) && data.activeStudentCount >= 0 ? data.activeStudentCount : null,
-  };
+function serializeSchool(snapshot: FirebaseFirestore.DocumentSnapshot) {
+  return serializeManageSchool(snapshot.id, snapshot.data() ?? {}, {
+    isValidStudentLimit: (value) => parseManualStudentLimit(value) !== null,
+    allowZeroRadiusWhenDisabled: true,
+  });
 }
 
 async function getAuthorizedPlatformAdmin() {
@@ -157,99 +69,6 @@ async function getAuthorizedPlatformAdmin() {
   } catch {
     return null;
   }
-}
-
-function validateEditableFields(body: Record<string, unknown>) {
-  const name = stringOrEmpty(body.name);
-  const city = stringOrEmpty(body.city);
-  const timezone = stringOrEmpty(body.timezone);
-  const releaseEnabled = body.releaseEnabled;
-
-  if (
-    name.length < 2 ||
-    name.length > MAX_NAME_LENGTH
-  ) {
-    return 'School name must be between 2 and 200 characters.';
-  }
-
-  if (city.length > MAX_CITY_LENGTH) {
-    return 'City must be 100 characters or fewer.';
-  }
-
-  if (!isValidTimezone(timezone)) {
-    return 'timezone must be a valid IANA timezone.';
-  }
-
-  if (parseManualStudentLimit(body.studentLimit) === null) return 'Choose a student capacity from the available school-wide limits.';
-
-  if (typeof releaseEnabled !== 'boolean') {
-    return 'releaseEnabled must be a boolean.';
-  }
-
-  const pickupLatitude = body.pickupLatitude;
-  if (
-    !isFiniteNumber(pickupLatitude) ||
-    pickupLatitude < -90 ||
-    pickupLatitude > 90
-  ) {
-    return 'pickupLatitude must be a number between -90 and 90.';
-  }
-
-  const pickupLongitude = body.pickupLongitude;
-  if (
-    !isFiniteNumber(pickupLongitude) ||
-    pickupLongitude < -180 ||
-    pickupLongitude > 180
-  ) {
-    return 'pickupLongitude must be a number between -180 and 180.';
-  }
-
-  const pickupRadiusMeters = body.pickupRadiusMeters;
-  if (
-    !isFiniteNumber(pickupRadiusMeters) ||
-    pickupRadiusMeters < MIN_PICKUP_RADIUS_METERS ||
-    pickupRadiusMeters > MAX_PICKUP_RADIUS_METERS
-  ) {
-    return `pickupRadiusMeters must be between ${MIN_PICKUP_RADIUS_METERS} and ${MAX_PICKUP_RADIUS_METERS}.`;
-  }
-
-  const pickupRequestLifetimeMinutes =
-    body.pickupRequestLifetimeMinutes;
-  if (
-    !isInteger(pickupRequestLifetimeMinutes) ||
-    pickupRequestLifetimeMinutes <
-      MIN_PICKUP_REQUEST_LIFETIME_MINUTES ||
-    pickupRequestLifetimeMinutes >
-      MAX_PICKUP_REQUEST_LIFETIME_MINUTES
-  ) {
-    return `pickupRequestLifetimeMinutes must be between ${MIN_PICKUP_REQUEST_LIFETIME_MINUTES} and ${MAX_PICKUP_REQUEST_LIFETIME_MINUTES}.`;
-  }
-
-  const pickupReleaseMinutesBeforeBell =
-    body.pickupReleaseMinutesBeforeBell;
-  if (
-    !isInteger(pickupReleaseMinutesBeforeBell) ||
-    pickupReleaseMinutesBeforeBell <
-      MIN_RELEASE_MINUTES_BEFORE_BELL ||
-    pickupReleaseMinutesBeforeBell >
-      MAX_RELEASE_MINUTES_BEFORE_BELL
-  ) {
-    return `pickupReleaseMinutesBeforeBell must be between ${MIN_RELEASE_MINUTES_BEFORE_BELL} and ${MAX_RELEASE_MINUTES_BEFORE_BELL}.`;
-  }
-
-  const pickupSessionDurationMinutes =
-    body.pickupSessionDurationMinutes;
-  if (
-    !isInteger(pickupSessionDurationMinutes) ||
-    pickupSessionDurationMinutes <
-      MIN_SESSION_DURATION_MINUTES ||
-    pickupSessionDurationMinutes >
-      MAX_SESSION_DURATION_MINUTES
-  ) {
-    return `pickupSessionDurationMinutes must be between ${MIN_SESSION_DURATION_MINUTES} and ${MAX_SESSION_DURATION_MINUTES}.`;
-  }
-
-  return null;
 }
 
 export async function PATCH(
@@ -351,6 +170,11 @@ export async function PATCH(
           return {
             kind: 'invalid_status' as const,
             currentStatus,
+            issues: [{
+              field: 'status',
+              code: 'invalid_status',
+              message: 'The saved school status is not recognized. This lifecycle value cannot be repaired in Manage School.',
+            }],
           };
         }
 
@@ -397,9 +221,16 @@ export async function PATCH(
 
         if (action === 'update') {
           const schoolUpdate = mergeManageSchoolPatch(current, body);
-          const editableError = validateEditableFields(schoolUpdate);
-          if (editableError) {
-            return { kind: 'invalid_school' as const, message: editableError };
+          const issues = getSchoolConfigurationIssues(
+            { ...schoolUpdate, schoolId: current.schoolId, status: current.status },
+            {
+              isValidStudentLimit: (value) => parseManualStudentLimit(value) !== null,
+              allowZeroRadiusWhenDisabled: true,
+              expectedSchoolId: normalizedSchoolId,
+            },
+          );
+          if (issues.length > 0) {
+            return { kind: 'invalid_school' as const, issues };
           }
 
           const studentLimit = parseManualStudentLimit(schoolUpdate.studentLimit);
@@ -413,7 +244,7 @@ export async function PATCH(
           const capacity = validateManualStudentCapacity(studentLimit, activeStudentCount);
           if (!capacity.ok) return { kind: 'capacity_invalid' as const, activeStudentCount };
           updateData = {
-            ...schoolUpdate,
+            ...selectManageSchoolPatch(body),
             studentLimit: capacity.studentLimit,
             activeStudentCount: capacity.activeStudentCount,
             updatedAt: FieldValue.serverTimestamp(),
@@ -485,7 +316,7 @@ export async function PATCH(
 
     if (result.kind === 'invalid_school') {
       return json(
-        { error: 'invalid_school', message: result.message },
+        { error: 'invalid_school', message: 'Correct all highlighted school settings.', issues: result.issues },
         400,
       );
     }
@@ -494,8 +325,8 @@ export async function PATCH(
       return json(
         {
           error: 'invalid_school_status',
-          message:
-            `School has unsupported status "${result.currentStatus}".`,
+          message: 'The saved school status is not recognized.',
+          issues: result.issues,
         },
         409,
       );
@@ -525,7 +356,15 @@ export async function PATCH(
 
     if (result.kind === 'capacity_invalid') {
       return json(
-        { error: 'invalid_student_capacity', message: 'Student capacity must be at least the current active student count (' + result.activeStudentCount + ').' },
+        {
+          error: 'invalid_student_capacity',
+          message: 'Student capacity must be at least the current active student count (' + result.activeStudentCount + ').',
+          issues: [{
+            field: 'studentLimit',
+            code: 'below_active_student_count',
+            message: 'Choose a limit that is at least the current active student count (' + result.activeStudentCount + ').',
+          }],
+        },
         409,
       );
     }

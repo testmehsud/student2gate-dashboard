@@ -2,15 +2,16 @@
 
 import { FormEvent, useState } from 'react';
 import { MANUAL_STUDENT_CAPACITY_OPTIONS } from '@/lib/student-capacity.mjs';
-import { buildManageSchoolPatch, getManageSchoolInitialName } from '@/lib/school-update';
+import { buildManageSchoolPatch, getManageSchoolInitialName, SCHOOL_FIELD_LABELS } from '@/lib/school-update';
+import type { SchoolConfigurationIssue } from '@/lib/school-update';
 
 type ManageSchool = {
   schoolId: string;
-  name: string;
+  name: string | null;
   city: string;
   status: string;
-  timezone: string;
-  releaseEnabled: boolean;
+  timezone: string | null;
+  releaseEnabled: boolean | null;
   pickupLatitude: number | null;
   pickupLongitude: number | null;
   pickupRadiusMeters: number | null;
@@ -20,6 +21,7 @@ type ManageSchool = {
   studentLimit: number | null;
   activeStudentCount: number | null;
   studentCount?: number;
+  configurationIssues?: SchoolConfigurationIssue[];
 };
 
 export default function ManageSchoolModal({
@@ -33,6 +35,8 @@ export default function ManageSchoolModal({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [fieldIssues, setFieldIssues] = useState<SchoolConfigurationIssue[]>(school.configurationIssues ?? []);
+  const [releaseEnabledValue, setReleaseEnabledValue] = useState(() => school.releaseEnabled === null ? '' : String(school.releaseEnabled));
   const [name, setName] = useState(() => getManageSchoolInitialName(school));
 
   async function request(
@@ -79,13 +83,14 @@ export default function ManageSchoolModal({
           return raw === '' ? null : Number(raw);
         };
 
+        const releaseEnabledRaw = String(data.get('releaseEnabled') ?? '');
         Object.assign(
           body,
           buildManageSchoolPatch(school, {
             name: name.trim(),
             city: String(data.get('city') ?? '').trim(),
             timezone: String(data.get('timezone') ?? '').trim(),
-            releaseEnabled: data.get('releaseEnabled') === 'on',
+            releaseEnabled: releaseEnabledRaw === '' ? null : releaseEnabledRaw === 'true',
             pickupLatitude: numberValue('pickupLatitude'),
             pickupLongitude: numberValue('pickupLongitude'),
             pickupRadiusMeters: numberValue('pickupRadiusMeters'),
@@ -116,10 +121,15 @@ export default function ManageSchoolModal({
         await response.json().catch(() => null);
 
       if (!response.ok) {
+        if (Array.isArray(result?.issues)) {
+          setFieldIssues(result.issues as SchoolConfigurationIssue[]);
+        }
         throw new Error(
-          typeof result?.error === 'string'
-            ? result.error
-            : 'Unable to update school.',
+          typeof result?.message === 'string'
+            ? result.message
+            : typeof result?.error === 'string'
+              ? result.error
+              : 'Unable to update school.',
         );
       }
 
@@ -145,6 +155,7 @@ export default function ManageSchoolModal({
 
   const archived =
     school.status === 'ARCHIVED';
+  const invalidStatus = !['ACTIVE', 'INACTIVE', 'SUSPENDED', 'ARCHIVED'].includes(school.status);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -203,6 +214,16 @@ export default function ManageSchoolModal({
           }}
           className="space-y-6 p-6"
         >
+          {fieldIssues.length > 0 && (
+            <div role="alert" aria-live="polite" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-semibold">Correct these school settings before saving:</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                {fieldIssues.map((issue) => (
+                  <li key={issue.field}><strong>{SCHOOL_FIELD_LABELS[issue.field] ?? issue.field}:</strong> {issue.message}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <section>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
@@ -227,7 +248,7 @@ export default function ManageSchoolModal({
                   required
                   maxLength={200}
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
                 />
@@ -243,7 +264,7 @@ export default function ManageSchoolModal({
                   defaultValue={school.city}
                   maxLength={100}
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
                 />
@@ -257,11 +278,11 @@ export default function ManageSchoolModal({
                 <input
                   name="timezone"
                   defaultValue={
-                    school.timezone
+                    school.timezone ?? ''
                   }
                   required
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
                 />
@@ -276,7 +297,7 @@ export default function ManageSchoolModal({
             {school.studentLimit === null && <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">Student capacity is not configured. Set it here before School Admins add students.</p>}
             <label className="block max-w-md">
               <span className="mb-1 block text-sm font-medium text-slate-700">Maximum active students</span>
-              <select name="studentLimit" defaultValue={school.studentLimit?.toString() ?? ''} required disabled={archived || busy} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+              <select name="studentLimit" defaultValue={school.studentLimit?.toString() ?? ''} required disabled={archived || invalidStatus || busy} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
                 <option value="" disabled>Choose a capacity</option>
                 {MANUAL_STUDENT_CAPACITY_OPTIONS.map((capacity) => (
                   <option key={capacity} value={capacity}>{capacity.toLocaleString()} students</option>
@@ -308,7 +329,7 @@ export default function ManageSchoolModal({
                   }
                   required
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
@@ -330,7 +351,7 @@ export default function ManageSchoolModal({
                   }
                   required
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
@@ -344,14 +365,14 @@ export default function ManageSchoolModal({
                 <input
                   name="pickupRadiusMeters"
                   type="number"
-                  min="1"
+                  min={releaseEnabledValue === 'false' ? 0 : 1}
                   max="5000"
                   defaultValue={
                     school.pickupRadiusMeters ?? ''
                   }
                   required
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
@@ -381,7 +402,7 @@ export default function ManageSchoolModal({
                   }
                   required
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
@@ -391,6 +412,7 @@ export default function ManageSchoolModal({
                 <span className="mb-1 block text-sm font-medium text-slate-700">
                   Release before bell
                 </span>
+                <span className="mt-1 block text-xs text-slate-500">Optional. If unset, the Worker uses its configured 5-minute default.</span>
 
                 <input
                   name="pickupReleaseMinutesBeforeBell"
@@ -401,9 +423,8 @@ export default function ManageSchoolModal({
                     school.pickupReleaseMinutesBeforeBell ??
                     ''
                   }
-                  required
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
@@ -413,6 +434,7 @@ export default function ManageSchoolModal({
                 <span className="mb-1 block text-sm font-medium text-slate-700">
                   Session duration
                 </span>
+                <span className="mt-1 block text-xs text-slate-500">Optional. If unset, the Worker uses its configured 30-minute default.</span>
 
                 <input
                   name="pickupSessionDurationMinutes"
@@ -423,9 +445,8 @@ export default function ManageSchoolModal({
                     school.pickupSessionDurationMinutes ??
                     ''
                   }
-                  required
                   disabled={
-                    archived || busy
+                    archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
@@ -433,27 +454,24 @@ export default function ManageSchoolModal({
             </div>
           </section>
 
-          <label className="flex items-center gap-3 rounded-xl border border-slate-200 p-4">
-            <input
+          <label className="block max-w-md">
+            <span className="mb-1 block text-sm font-medium text-slate-700">
+              Pickup release enabled
+            </span>
+            <select
               name="releaseEnabled"
-              type="checkbox"
-              defaultChecked={
-                school.releaseEnabled
-              }
-              disabled={
-                archived || busy
-              }
-            />
-
-            <span>
-              <span className="block text-sm font-semibold text-slate-800">
-                Pickup release enabled
-              </span>
-
-              <span className="block text-xs text-slate-500">
-                Enable scheduled pickup release
-                for this school.
-              </span>
+              value={releaseEnabledValue}
+              onChange={(event) => setReleaseEnabledValue(event.target.value)}
+              required
+              disabled={archived || invalidStatus || busy}
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3"
+            >
+              <option value="" disabled>Choose enabled or disabled</option>
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
+            <span className="mt-2 block text-xs text-slate-500">
+              The radius is used only while pickup release is enabled. When enabled, choose a radius from 1 to 5,000 meters.
             </span>
           </label>
 
@@ -470,7 +488,7 @@ export default function ManageSchoolModal({
                 'INACTIVE' ? (
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || invalidStatus}
                     onClick={() =>
                       void request(
                         'reactivate',
@@ -483,7 +501,7 @@ export default function ManageSchoolModal({
                 ) : (
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || invalidStatus}
                     onClick={() => {
                       if (
                         window.confirm(
@@ -504,7 +522,7 @@ export default function ManageSchoolModal({
               {!archived && (
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || invalidStatus}
                   onClick={() => {
                     if (
                       window.confirm(
@@ -536,7 +554,7 @@ export default function ManageSchoolModal({
               {!archived && (
                 <button
                   type="submit"
-                  disabled={busy}
+                  disabled={busy || invalidStatus}
                   className="rounded-xl bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-800"
                 >
                   {busy

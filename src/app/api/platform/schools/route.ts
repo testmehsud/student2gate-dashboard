@@ -4,24 +4,10 @@ import { FieldValue } from 'firebase-admin/firestore';
 
 import { getAdminDb } from '@/lib/firebase-admin';
 import { requirePlatformAdmin } from '@/lib/platform-auth';
-import { createManualStudentCapacity } from '@/lib/student-capacity.mjs';
+import { createManualStudentCapacity, parseManualStudentLimit } from '@/lib/student-capacity.mjs';
+import { getSchoolConfigurationIssues, serializeManageSchool } from '@/lib/school-update';
 
 const CSRF_COOKIE = 's2g_csrf';
-
-const MAX_NAME_LENGTH = 200;
-const MAX_CITY_LENGTH = 100;
-
-const MIN_PICKUP_RADIUS_METERS = 1;
-const MAX_PICKUP_RADIUS_METERS = 5_000;
-
-const MIN_PICKUP_REQUEST_LIFETIME_MINUTES = 1;
-const MAX_PICKUP_REQUEST_LIFETIME_MINUTES = 180;
-
-const MIN_RELEASE_MINUTES_BEFORE_BELL = 0;
-const MAX_RELEASE_MINUTES_BEFORE_BELL = 60;
-
-const MIN_SESSION_DURATION_MINUTES = 1;
-const MAX_SESSION_DURATION_MINUTES = 240;
 
 class SchoolConflictError extends Error {
   constructor() {
@@ -64,32 +50,6 @@ function validCsrf(request: NextRequest, bodyToken: unknown): boolean {
   return cookieToken === bodyToken;
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isFinite(value)
-  );
-}
-
-function isInteger(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value)
-  );
-}
-
-function isValidTimezone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat('en-US', {
-      timeZone: value,
-    }).format();
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function makeSchoolId(name: string): string {
   const slug = name
     .toLowerCase()
@@ -108,58 +68,11 @@ function stringOrEmpty(value: unknown): string {
     : '';
 }
 
-function serializeSchool(
-  snapshot: FirebaseFirestore.DocumentSnapshot,
-) {
-  const data = snapshot.data() ?? {};
-
-  return {
-    schoolId: snapshot.id,
-    name:
-      typeof data.name === 'string'
-        ? data.name
-        : '',
-    city:
-      typeof data.city === 'string'
-        ? data.city
-        : '',
-    status:
-      typeof data.status === 'string'
-        ? data.status
-        : '',
-    timezone:
-      typeof data.timezone === 'string'
-        ? data.timezone
-        : '',
-    releaseEnabled:
-      data.releaseEnabled === true,
-    pickupLatitude:
-      typeof data.pickupLatitude === 'number'
-        ? data.pickupLatitude
-        : null,
-    pickupLongitude:
-      typeof data.pickupLongitude === 'number'
-        ? data.pickupLongitude
-        : null,
-    pickupRadiusMeters:
-      typeof data.pickupRadiusMeters === 'number'
-        ? data.pickupRadiusMeters
-        : null,
-    pickupRequestLifetimeMinutes:
-      typeof data.pickupRequestLifetimeMinutes === 'number'
-        ? data.pickupRequestLifetimeMinutes
-        : null,
-    pickupReleaseMinutesBeforeBell:
-      typeof data.pickupReleaseMinutesBeforeBell === 'number'
-        ? data.pickupReleaseMinutesBeforeBell
-        : null,
-    pickupSessionDurationMinutes:
-      typeof data.pickupSessionDurationMinutes === 'number'
-        ? data.pickupSessionDurationMinutes
-        : null,
-    studentLimit: Number.isSafeInteger(data.studentLimit) ? data.studentLimit : null,
-    activeStudentCount: Number.isSafeInteger(data.activeStudentCount) && data.activeStudentCount >= 0 ? data.activeStudentCount : null,
-  };
+function serializeSchool(snapshot: FirebaseFirestore.DocumentSnapshot) {
+  return serializeManageSchool(snapshot.id, snapshot.data() ?? {}, {
+    isValidStudentLimit: (value) => parseManualStudentLimit(value) !== null,
+    allowZeroRadiusWhenDisabled: true,
+  });
 }
 
 async function getAuthorizedPlatformAdmin() {
@@ -269,7 +182,7 @@ export async function GET() {
         };
       })
       .sort((a, b) =>
-        a.name.localeCompare(b.name),
+        (a.name ?? '').localeCompare(b.name ?? ''),
       );
 
     return json({
@@ -322,168 +235,56 @@ export async function POST(
     const timezone = stringOrEmpty(
       body?.timezone,
     );
+    const settings = {
+      name,
+      city,
+      timezone,
+      studentLimit: body?.studentLimit,
+      releaseEnabled: body?.releaseEnabled,
+      pickupLatitude: body?.pickupLatitude,
+      pickupLongitude: body?.pickupLongitude,
+      pickupRadiusMeters: body?.pickupRadiusMeters,
+      pickupRequestLifetimeMinutes: body?.pickupRequestLifetimeMinutes,
+      pickupReleaseMinutesBeforeBell: body?.pickupReleaseMinutesBeforeBell,
+      pickupSessionDurationMinutes: body?.pickupSessionDurationMinutes,
+    };
+    const issues = getSchoolConfigurationIssues(settings, {
+      isValidStudentLimit: (value) => parseManualStudentLimit(value) !== null,
+      requirePickupTiming: true,
+    });
+    if (issues.length > 0) {
+      return json(
+        {
+          error: 'invalid_school',
+          message: 'Correct all highlighted school settings.',
+          issues,
+        },
+        400,
+      );
+    }
+
     const capacityFields = createManualStudentCapacity(body?.studentLimit);
-    if (!capacityFields) return json({ error: 'Choose a student capacity from the available school-wide limits.' }, 400);
-
-    if (
-      name.length < 2 ||
-      name.length > MAX_NAME_LENGTH
-    ) {
+    if (!capacityFields) {
       return json(
         {
-          error:
-            'School name must be between 2 and 200 characters.',
+          error: 'invalid_school',
+          message: 'Choose an approved student capacity.',
+          issues: [{
+            field: 'studentLimit',
+            code: 'invalid_capacity',
+            message: 'Choose one of the approved school-wide student capacity limits.',
+          }],
         },
         400,
       );
     }
-
-    if (city.length > MAX_CITY_LENGTH) {
-      return json(
-        {
-          error:
-            'City must be 100 characters or fewer.',
-        },
-        400,
-      );
-    }
-
-    if (!isValidTimezone(timezone)) {
-      return json(
-        {
-          error:
-            'timezone must be a valid IANA timezone.',
-        },
-        400,
-      );
-    }
-
-    const releaseEnabled =
-      body?.releaseEnabled;
-
-    if (
-      typeof releaseEnabled !== 'boolean'
-    ) {
-      return json(
-        {
-          error:
-            'releaseEnabled must be a boolean.',
-        },
-        400,
-      );
-    }
-
-    const pickupLatitude =
-      body?.pickupLatitude;
-
-    if (
-      !isFiniteNumber(pickupLatitude) ||
-      pickupLatitude < -90 ||
-      pickupLatitude > 90
-    ) {
-      return json(
-        {
-          error:
-            'pickupLatitude must be a number between -90 and 90.',
-        },
-        400,
-      );
-    }
-
-    const pickupLongitude =
-      body?.pickupLongitude;
-
-    if (
-      !isFiniteNumber(pickupLongitude) ||
-      pickupLongitude < -180 ||
-      pickupLongitude > 180
-    ) {
-      return json(
-        {
-          error:
-            'pickupLongitude must be a number between -180 and 180.',
-        },
-        400,
-      );
-    }
-
-    const pickupRadiusMeters =
-      body?.pickupRadiusMeters;
-
-    if (
-      !isFiniteNumber(pickupRadiusMeters) ||
-      pickupRadiusMeters <
-        MIN_PICKUP_RADIUS_METERS ||
-      pickupRadiusMeters >
-        MAX_PICKUP_RADIUS_METERS
-    ) {
-      return json(
-        {
-          error: `pickupRadiusMeters must be between ${MIN_PICKUP_RADIUS_METERS} and ${MAX_PICKUP_RADIUS_METERS}.`,
-        },
-        400,
-      );
-    }
-
-    const pickupRequestLifetimeMinutes =
-      body?.pickupRequestLifetimeMinutes;
-
-    if (
-      !isInteger(
-        pickupRequestLifetimeMinutes,
-      ) ||
-      pickupRequestLifetimeMinutes <
-        MIN_PICKUP_REQUEST_LIFETIME_MINUTES ||
-      pickupRequestLifetimeMinutes >
-        MAX_PICKUP_REQUEST_LIFETIME_MINUTES
-    ) {
-      return json(
-        {
-          error: `pickupRequestLifetimeMinutes must be between ${MIN_PICKUP_REQUEST_LIFETIME_MINUTES} and ${MAX_PICKUP_REQUEST_LIFETIME_MINUTES}.`,
-        },
-        400,
-      );
-    }
-
-    const pickupReleaseMinutesBeforeBell =
-      body?.pickupReleaseMinutesBeforeBell;
-
-    if (
-      !isInteger(
-        pickupReleaseMinutesBeforeBell,
-      ) ||
-      pickupReleaseMinutesBeforeBell <
-        MIN_RELEASE_MINUTES_BEFORE_BELL ||
-      pickupReleaseMinutesBeforeBell >
-        MAX_RELEASE_MINUTES_BEFORE_BELL
-    ) {
-      return json(
-        {
-          error: `pickupReleaseMinutesBeforeBell must be between ${MIN_RELEASE_MINUTES_BEFORE_BELL} and ${MAX_RELEASE_MINUTES_BEFORE_BELL}.`,
-        },
-        400,
-      );
-    }
-
-    const pickupSessionDurationMinutes =
-      body?.pickupSessionDurationMinutes;
-
-    if (
-      !isInteger(
-        pickupSessionDurationMinutes,
-      ) ||
-      pickupSessionDurationMinutes <
-        MIN_SESSION_DURATION_MINUTES ||
-      pickupSessionDurationMinutes >
-        MAX_SESSION_DURATION_MINUTES
-    ) {
-      return json(
-        {
-          error: `pickupSessionDurationMinutes must be between ${MIN_SESSION_DURATION_MINUTES} and ${MAX_SESSION_DURATION_MINUTES}.`,
-        },
-        400,
-      );
-    }
+    const releaseEnabled = settings.releaseEnabled as boolean;
+    const pickupLatitude = settings.pickupLatitude as number;
+    const pickupLongitude = settings.pickupLongitude as number;
+    const pickupRadiusMeters = settings.pickupRadiusMeters as number;
+    const pickupRequestLifetimeMinutes = settings.pickupRequestLifetimeMinutes as number;
+    const pickupReleaseMinutesBeforeBell = settings.pickupReleaseMinutesBeforeBell as number;
+    const pickupSessionDurationMinutes = settings.pickupSessionDurationMinutes as number;
 
     const db = getAdminDb();
 

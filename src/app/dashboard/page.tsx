@@ -12,6 +12,8 @@ import ManageSchoolModal from './components/manage-school-modal';
 import ManageSchoolAdminModal from './components/manage-school-admin-modal';
 import DataDeletionRequests from './components/data-deletion-requests';
 import { MANUAL_STUDENT_CAPACITY_OPTIONS } from '@/lib/student-capacity.mjs';
+import { SCHOOL_FIELD_LABELS } from '@/lib/school-update';
+import type { SchoolConfigurationIssue } from '@/lib/school-update';
 type Section =
   | 'Overview'
   | 'Schools'
@@ -34,11 +36,11 @@ type DashboardIconName =
 
 type LiveSchool = {
   schoolId: string;
-  name: string;
+  name: string | null;
   city: string;
   status: string;
-  timezone: string;
-  releaseEnabled: boolean;
+  timezone: string | null;
+  releaseEnabled: boolean | null;
   pickupLatitude: number | null;
   pickupLongitude: number | null;
   pickupRadiusMeters: number | null;
@@ -47,6 +49,7 @@ type LiveSchool = {
   pickupSessionDurationMinutes: number | null;
   studentLimit: number | null;
   activeStudentCount: number | null;
+  configurationIssues?: SchoolConfigurationIssue[];
   studentCount?: number;
   adminCount?: number;
   activeAdminCount?: number;
@@ -562,8 +565,8 @@ export default function Home() {
             setLiveSchools((current) =>
               [...current, school].sort(
                 (a, b) =>
-                  a.name.localeCompare(
-                    b.name,
+                  (a.name ?? '').localeCompare(
+                    b.name ?? '',
                   ),
               ),
             );
@@ -806,7 +809,7 @@ function Overview({
                       <tr key={school.schoolId}>
                         <td>
                           <div className="table-primary">
-                            {school.name}
+                            {school.name ?? '(Unnamed school)'}
                           </div>
 
                           <div className="table-secondary">
@@ -956,7 +959,7 @@ function Schools({
         school.schoolId,
         school.timezone,
       ].some((value) =>
-        value.toLowerCase().includes(query),
+        typeof value === 'string' && value.toLowerCase().includes(query),
       );
     });
   }, [schools, searchQuery, statusFilter]);
@@ -1096,7 +1099,7 @@ function Schools({
                     >
                       <td>
                         <div className="table-primary">
-                          {school.name}
+                          {school.name ?? '(Unnamed school)'}
                         </div>
 
                         <div className="table-secondary">
@@ -1136,9 +1139,11 @@ function Schools({
                       </td>
 
                       <td>
-                        {school.releaseEnabled
-                          ? 'Enabled'
-                          : 'Disabled'}
+                        {school.releaseEnabled === null
+                          ? 'Not configured'
+                          : school.releaseEnabled
+                            ? 'Enabled'
+                            : 'Disabled'}
                       </td>
 
                       <td>
@@ -1178,7 +1183,7 @@ function CreateSchoolModal({
     useState('');
 
   const [timezone, setTimezone] =
-    useState('Asia/Karachi');
+    useState('');
 
   const [studentLimit, setStudentLimit] =
     useState('');
@@ -1222,6 +1227,8 @@ function CreateSchoolModal({
   const [error, setError] =
     useState('');
 
+  const [fieldIssues, setFieldIssues] = useState<SchoolConfigurationIssue[]>([]);
+
   async function handleSubmit(
     event: FormEvent<HTMLFormElement>,
   ) {
@@ -1232,6 +1239,7 @@ function CreateSchoolModal({
     }
 
     setError('');
+    setFieldIssues([]);
     setBusy(true);
 
     try {
@@ -1325,11 +1333,15 @@ function CreateSchoolModal({
           .catch(() => null);
 
       if (!response.ok) {
+        if (Array.isArray(result?.issues)) {
+          setFieldIssues(result.issues as SchoolConfigurationIssue[]);
+        }
         throw new Error(
-          typeof result?.error ===
-            'string'
-            ? result.error
-            : 'Unable to create school.',
+          typeof result?.message === 'string'
+            ? result.message
+            : typeof result?.error === 'string'
+              ? result.error
+              : 'Unable to create school.',
         );
       }
 
@@ -1395,6 +1407,16 @@ function CreateSchoolModal({
           onSubmit={handleSubmit}
           className="space-y-6 p-6"
         >
+          {fieldIssues.length > 0 && (
+            <div role="alert" aria-live="polite" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-semibold">Correct these school settings before creating the school:</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                {fieldIssues.map((issue) => (
+                  <li key={issue.field}><strong>{SCHOOL_FIELD_LABELS[issue.field] ?? issue.field}:</strong> {issue.message}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <section>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
               School
@@ -1586,7 +1608,7 @@ function CreateSchoolModal({
 
                 <input
                   type="number"
-                  min="0"
+                  min="1"
                   max="60"
                   value={
                     pickupReleaseMinutesBeforeBell
@@ -1935,7 +1957,7 @@ function SchoolAdmins({
                 key={school.schoolId}
                 value={school.schoolId}
               >
-                {school.name}
+                {school.name ?? '(Unnamed school)'}
               </option>
             ))}
           </select>
@@ -2099,7 +2121,11 @@ function SchoolAdmins({
       {selectedAdmin && (
         <ManageSchoolAdminModal
           admin={selectedAdmin}
-          schools={schools}
+          schools={schools.map((school) => ({
+            schoolId: school.schoolId,
+            name: school.name ?? '(Unnamed school)',
+            status: school.status,
+          }))}
           onClose={() =>
             setSelectedAdmin(null)
           }
@@ -2331,7 +2357,7 @@ function CreateSchoolAdminModal({
                   key={school.schoolId}
                   value={school.schoolId}
                 >
-                  {school.name}
+                  {school.name ?? '(Unnamed school)'}
                   {school.city
                     ? `  ${school.city}`
                     : ''}
