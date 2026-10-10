@@ -11,6 +11,7 @@ import { useRouter } from 'next/navigation';
 import ManageSchoolModal from './components/manage-school-modal';
 import ManageSchoolAdminModal from './components/manage-school-admin-modal';
 import DataDeletionRequests from './components/data-deletion-requests';
+import { MANUAL_STUDENT_CAPACITY_OPTIONS } from '@/lib/student-capacity.mjs';
 type Section =
   | 'Overview'
   | 'Schools'
@@ -44,6 +45,8 @@ type LiveSchool = {
   pickupRequestLifetimeMinutes: number | null;
   pickupReleaseMinutesBeforeBell: number | null;
   pickupSessionDurationMinutes: number | null;
+  studentLimit: number | null;
+  activeStudentCount: number | null;
   studentCount?: number;
   adminCount?: number;
   activeAdminCount?: number;
@@ -1049,6 +1052,7 @@ function Schools({
                 <th>School</th>
                 <th>Status</th>
                 <th>Timezone</th>
+                <th>Student capacity</th>
                 <th>Pickup</th>
                 <th>Release</th>
                 <th>Action</th>
@@ -1058,7 +1062,7 @@ function Schools({
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     Loading schools…
                   </td>
                 </tr>
@@ -1067,7 +1071,7 @@ function Schools({
               {!loading &&
                 filteredSchools.length === 0 && (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       {schools.length === 0
                         ? 'No schools have been created yet.'
                         : 'No schools match the current search or status filter.'}
@@ -1113,6 +1117,10 @@ function Schools({
                       <td>
                         {school.timezone ||
                           '—'}
+                      </td>
+
+                      <td>
+                        {school.studentLimit === null ? 'Not configured' : school.studentLimit.toLocaleString() + ' students'}
                       </td>
 
                       <td>
@@ -1170,6 +1178,9 @@ function CreateSchoolModal({
 
   const [timezone, setTimezone] =
     useState('Asia/Karachi');
+
+  const [studentLimit, setStudentLimit] =
+    useState('');
 
   const [releaseEnabled, setReleaseEnabled] =
     useState(false);
@@ -1269,6 +1280,8 @@ function CreateSchoolModal({
 
             timezone:
               timezone.trim(),
+
+            studentLimit: Number(studentLimit),
 
             releaseEnabled,
 
@@ -1445,6 +1458,22 @@ function CreateSchoolModal({
                 />
               </label>
             </div>
+          </section>
+
+          <section>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Student capacity
+            </h3>
+            <label className="block max-w-md">
+              <span className="mb-1 block text-sm font-medium text-slate-700">Maximum active students</span>
+              <select value={studentLimit} onChange={(event) => setStudentLimit(event.target.value)} required disabled={busy} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+                <option value="" disabled>Choose a capacity</option>
+                {MANUAL_STUDENT_CAPACITY_OPTIONS.map((capacity) => (
+                  <option key={capacity} value={capacity}>{capacity.toLocaleString()} students</option>
+                ))}
+              </select>
+              <span className="mt-2 block text-sm text-slate-500">This school-wide limit controls how many active students its School Admins can add. Choose the approved limit; no value is selected automatically.</span>
+            </label>
           </section>
 
           <section>

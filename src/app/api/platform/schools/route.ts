@@ -4,6 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 
 import { getAdminDb } from '@/lib/firebase-admin';
 import { requirePlatformAdmin } from '@/lib/platform-auth';
+import { createManualStudentCapacity } from '@/lib/student-capacity.mjs';
 
 const CSRF_COOKIE = 's2g_csrf';
 
@@ -156,6 +157,8 @@ function serializeSchool(
       typeof data.pickupSessionDurationMinutes === 'number'
         ? data.pickupSessionDurationMinutes
         : null,
+    studentLimit: Number.isSafeInteger(data.studentLimit) ? data.studentLimit : null,
+    activeStudentCount: Number.isSafeInteger(data.activeStudentCount) && data.activeStudentCount >= 0 ? data.activeStudentCount : null,
   };
 }
 
@@ -319,6 +322,8 @@ export async function POST(
     const timezone = stringOrEmpty(
       body?.timezone,
     );
+    const capacityFields = createManualStudentCapacity(body?.studentLimit);
+    if (!capacityFields) return json({ error: 'Choose a student capacity from the available school-wide limits.' }, 400);
 
     if (
       name.length < 2 ||
@@ -528,6 +533,7 @@ export async function POST(
                 pickupRequestLifetimeMinutes,
                 pickupReleaseMinutesBeforeBell,
                 pickupSessionDurationMinutes,
+                ...capacityFields,
                 createdAt:
                   FieldValue.serverTimestamp(),
                 updatedAt:
@@ -583,6 +589,7 @@ export async function POST(
           pickupRequestLifetimeMinutes,
           pickupReleaseMinutesBeforeBell,
           pickupSessionDurationMinutes,
+          ...capacityFields,
         },
       },
       201,

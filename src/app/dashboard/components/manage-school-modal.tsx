@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { MANUAL_STUDENT_CAPACITY_OPTIONS } from '@/lib/student-capacity.mjs';
 
 type ManageSchool = {
   schoolId: string;
@@ -15,6 +16,9 @@ type ManageSchool = {
   pickupRequestLifetimeMinutes: number | null;
   pickupReleaseMinutesBeforeBell: number | null;
   pickupSessionDurationMinutes: number | null;
+  studentLimit: number | null;
+  activeStudentCount: number | null;
+  studentCount?: number;
 };
 
 export default function ManageSchoolModal({
@@ -114,6 +118,8 @@ export default function ManageSchoolModal({
           numberValue(
             'pickupSessionDurationMinutes',
           );
+
+        body.studentLimit = numberValue('studentLimit');
       }
 
       const response = await fetch(
@@ -285,6 +291,23 @@ export default function ManageSchoolModal({
                 />
               </label>
             </div>
+          </section>
+
+          <section>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Student capacity
+            </h3>
+            {school.studentLimit === null && <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">Student capacity is not configured. Set it here before School Admins add students.</p>}
+            <label className="block max-w-md">
+              <span className="mb-1 block text-sm font-medium text-slate-700">Maximum active students</span>
+              <select name="studentLimit" defaultValue={school.studentLimit?.toString() ?? ''} required disabled={archived || busy} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+                <option value="" disabled>Choose a capacity</option>
+                {MANUAL_STUDENT_CAPACITY_OPTIONS.map((capacity) => (
+                  <option key={capacity} value={capacity}>{capacity.toLocaleString()} students</option>
+                ))}
+              </select>
+              <span className="mt-2 block text-sm text-slate-500">School-wide active-student limit. Current active count: {(school.activeStudentCount ?? school.studentCount ?? 0).toLocaleString()}.</span>
+            </label>
           </section>
 
           <section>

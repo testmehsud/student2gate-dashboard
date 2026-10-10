@@ -4,6 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 
 import { getAdminDb } from '@/lib/firebase-admin';
 import { requirePlatformAdmin } from '@/lib/platform-auth';
+import { parseManualStudentLimit, validateManualStudentCapacity } from '@/lib/student-capacity.mjs';
 
 const CSRF_COOKIE = 's2g_csrf';
 
@@ -144,6 +145,8 @@ function serializeSchool(
       typeof data.pickupSessionDurationMinutes === 'number'
         ? data.pickupSessionDurationMinutes
         : null,
+    studentLimit: Number.isSafeInteger(data.studentLimit) ? data.studentLimit : null,
+    activeStudentCount: Number.isSafeInteger(data.activeStudentCount) && data.activeStudentCount >= 0 ? data.activeStudentCount : null,
   };
 }
 
@@ -175,6 +178,8 @@ function validateEditableFields(body: Record<string, unknown>) {
   if (!isValidTimezone(timezone)) {
     return 'timezone must be a valid IANA timezone.';
   }
+
+  if (parseManualStudentLimit(body.studentLimit) === null) return 'Choose a student capacity from the available school-wide limits.';
 
   if (typeof releaseEnabled !== 'boolean') {
     return 'releaseEnabled must be a boolean.';
@@ -404,6 +409,16 @@ export async function PATCH(
         let eventType = '';
 
         if (action === 'update') {
+          const studentLimit = parseManualStudentLimit(body.studentLimit);
+          let activeStudentCount = current.activeStudentCount;
+          const currentLimit = current.studentLimit;
+          const consistent = Number.isSafeInteger(currentLimit) && currentLimit > 0 && Number.isSafeInteger(activeStudentCount) && activeStudentCount >= 0 && activeStudentCount <= currentLimit;
+          if (!consistent) {
+            const activeStudents = await transaction.get(schoolRef.collection('students').where('status', '==', 'ACTIVE'));
+            activeStudentCount = activeStudents.size;
+          }
+          const capacity = validateManualStudentCapacity(studentLimit, activeStudentCount);
+          if (!capacity.ok) return { kind: 'capacity_invalid' as const, activeStudentCount };
           updateData = {
             name: stringOrEmpty(body.name),
             city: stringOrEmpty(body.city),
@@ -418,6 +433,8 @@ export async function PATCH(
               body.pickupReleaseMinutesBeforeBell,
             pickupSessionDurationMinutes:
               body.pickupSessionDurationMinutes,
+            studentLimit: capacity.studentLimit,
+            activeStudentCount: capacity.activeStudentCount,
             updatedAt:
               FieldValue.serverTimestamp(),
           };
@@ -515,6 +532,13 @@ export async function PATCH(
           message:
             'The school is already archived.',
         },
+        409,
+      );
+    }
+
+    if (result.kind === 'capacity_invalid') {
+      return json(
+        { error: 'invalid_student_capacity', message: 'Student capacity must be at least the current active student count (' + result.activeStudentCount + ').' },
         409,
       );
     }
