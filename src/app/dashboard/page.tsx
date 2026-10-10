@@ -173,6 +173,8 @@ export default function Home() {
   const [liveSchools, setLiveSchools] =
     useState<LiveSchool[]>([]);
 
+  const [ianaTimezones, setIanaTimezones] = useState<string[]>([]);
+
   const [schoolsLoading, setSchoolsLoading] =
     useState(true);
 
@@ -274,6 +276,11 @@ export default function Home() {
 
       setLiveSchools(
         result.schools as LiveSchool[],
+      );
+      setIanaTimezones(
+        Array.isArray(result.timezoneOptions)
+          ? result.timezoneOptions.filter((timezone: unknown): timezone is string => typeof timezone === 'string')
+          : [],
       );
     } catch (error) {
       setSchoolError(
@@ -532,6 +539,7 @@ export default function Home() {
         <ManageSchoolModal
           key={selectedSchool.schoolId}
           school={selectedSchool}
+          timezoneOptions={ianaTimezones}
           onClose={() =>
             setSelectedSchool(null)
           }

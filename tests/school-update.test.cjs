@@ -14,7 +14,7 @@ require.extensions['.ts'] = (loadedModule, filename) => {
   loadedModule._compile(output, filename);
 };
 const repoRoot = path.resolve(__dirname, '..');
-const { buildManageSchoolPatch, getManageSchoolInitialName, getSchoolConfigurationIssues, mergeManageSchoolPatch, serializeManageSchool } = require('../src/lib/school-update.ts');
+const { buildManageSchoolPatch, filterIanaTimezoneOptions, getIanaTimezoneOptions, getManageSchoolInitialName, getManageSchoolInitialReleaseEnabled, getManageSchoolInitialTimezone, getSchoolConfigurationIssues, isValidIanaTimezone, mergeManageSchoolPatch, moveIanaTimezoneActiveIndex, parseManageSchoolFormValues, selectIanaTimezoneOption, serializeManageSchool } = require('../src/lib/school-update.ts');
 
 class Snapshot {
   constructor(id, value) { this.id = id; this.value = value; this.exists = value !== undefined; }
@@ -446,4 +446,99 @@ test('explicit null clears an optional Worker-default setting while required nul
     assert.ok(result.issues.some((issue) => issue.field === 'timezone' && issue.code === 'invalid_iana_timezone'));
     assert.deepEqual(db.data.get('schools/school-example'), beforeInvalid);
   });
+});
+
+
+test('timezone selector options are server-valid IANA identifiers and include Asia/Karachi', () => {
+  const options = getIanaTimezoneOptions();
+  assert.ok(options.length > 300);
+  assert.equal(options[0], 'Asia/Karachi');
+  assert.ok(options.includes('Asia/Karachi'));
+  assert.ok(options.includes('UTC'));
+  assert.ok(options.every((timezone) => isValidIanaTimezone(timezone)));
+  assert.deepEqual(filterIanaTimezoneOptions(options, 'karachi'), ['Asia/Karachi']);
+  assert.equal(selectIanaTimezoneOption(options, 'Asia/Karachi'), 'Asia/Karachi');
+  assert.equal(selectIanaTimezoneOption(options, 'Asia/Not-A-Timezone'), null);
+  assert.equal(moveIanaTimezoneActiveIndex(-1, 'down', 4), 0);
+  assert.equal(moveIanaTimezoneActiveIndex(-1, 'up', 4), 3);
+  assert.equal(moveIanaTimezoneActiveIndex(1, 'down', 4), 2);
+  assert.equal(moveIanaTimezoneActiveIndex(0, 'up', 4), 0);
+  assert.equal(moveIanaTimezoneActiveIndex(0, 'down', 0), -1);
+  assert.ok(filterIanaTimezoneOptions(options, 'america/new_york').includes('America/New_York'));
+});
+
+test('Manage School timezone selection preserves valid values and leaves missing or invalid values unset', () => {
+  assert.equal(getManageSchoolInitialTimezone({ timezone: 'Asia/Karachi', configurationIssues: [] }), 'Asia/Karachi');
+  assert.equal(getManageSchoolInitialTimezone({ timezone: 'Asia/Karachi', configurationIssues: [{ field: 'name', code: 'required', message: 'name' }] }), 'Asia/Karachi');
+  assert.equal(getManageSchoolInitialTimezone({ timezone: 'Not/A_Time_Zone', configurationIssues: [{ field: 'timezone', code: 'invalid_iana_timezone', message: 'invalid' }] }), '');
+  assert.equal(getManageSchoolInitialTimezone({ timezone: null }), '');
+  assert.equal(getManageSchoolInitialReleaseEnabled(false), 'false');
+  assert.equal(getManageSchoolInitialReleaseEnabled(true), 'true');
+  assert.equal(getManageSchoolInitialReleaseEnabled(null), '');
+});
+
+test('repair form serialization retains valid entries and converts numbers and explicit release choice', () => {
+  const serialized = parseManageSchoolFormValues({
+    name: '  Example Academy  ', city: '', timezone: 'Asia/Karachi', releaseEnabled: 'false',
+    pickupLatitude: '0', pickupLongitude: '0', pickupRadiusMeters: '0',
+    pickupRequestLifetimeMinutes: '30', pickupReleaseMinutesBeforeBell: '',
+    pickupSessionDurationMinutes: '', studentLimit: '300',
+  });
+  assert.deepEqual(serialized, {
+    name: 'Example Academy', city: '', timezone: 'Asia/Karachi', releaseEnabled: false,
+    pickupLatitude: 0, pickupLongitude: 0, pickupRadiusMeters: 0,
+    pickupRequestLifetimeMinutes: 30, pickupReleaseMinutesBeforeBell: null,
+    pickupSessionDurationMinutes: null, studentLimit: 300,
+  });
+  assert.equal(buildManageSchoolPatch(validSchool(), { ...validSchool(), ...serialized }).timezone, undefined);
+});
+
+test('disabled pickup sentinels remain valid, while enabled pickup requires an intentional location and positive radius', () => {
+  const options = { isValidStudentLimit: (value) => value === 300, allowZeroRadiusWhenDisabled: true };
+  const disabled = getSchoolConfigurationIssues({
+    ...validSchool(), studentLimit: 300, releaseEnabled: false,
+    pickupLatitude: 0, pickupLongitude: 0, pickupRadiusMeters: 0,
+  }, options);
+  assert.deepEqual(disabled, []);
+
+  const enabled = getSchoolConfigurationIssues({
+    ...validSchool(), studentLimit: 300, releaseEnabled: true,
+    pickupLatitude: 0, pickupLongitude: 0, pickupRadiusMeters: 0,
+  }, options);
+  assert.ok(enabled.some((issue) => issue.field === 'pickupLatitude' && issue.code === 'disabled_location_sentinel'));
+  assert.ok(enabled.some((issue) => issue.field === 'pickupLongitude' && issue.code === 'disabled_location_sentinel'));
+  assert.ok(enabled.some((issue) => issue.field === 'pickupRadiusMeters' && issue.code === 'invalid_radius'));
+
+  const enabledAtSchool = getSchoolConfigurationIssues({
+    ...validSchool(), studentLimit: 300, releaseEnabled: true,
+    pickupLatitude: 33.6844, pickupLongitude: 73.0479, pickupRadiusMeters: 100,
+  }, options);
+  assert.deepEqual(enabledAtSchool, []);
+});
+
+test('API refuses enabled pickup release with the disabled 0,0 and 0 m sentinels', async () => {
+  await withOrigin(async () => {
+    const db = new MemoryDb();
+    db.seed('schools', 'school-example', validSchool({ studentLimit: 300, pickupLatitude: 0, pickupLongitude: 0, pickupRadiusMeters: 0 }));
+    const route = await loadSchoolRoute(db);
+    const response = await route.PATCH(patchRequest({ studentLimit: 500 }), { params: Promise.resolve({ schoolId: 'school-example' }) });
+    assert.equal(response.status, 400);
+    const result = await response.json();
+    assert.ok(result.issues.some((issue) => issue.field === 'pickupLatitude' && issue.code === 'disabled_location_sentinel'));
+    assert.ok(result.issues.some((issue) => issue.field === 'pickupLongitude' && issue.code === 'disabled_location_sentinel'));
+    assert.equal(db.data.get('schools/school-example').studentLimit, 300);
+    assert.equal(db.entries('platformAuditLog').length, 0);
+  });
+});
+
+test('one repair validation response identifies every missing school control together', () => {
+  const issues = getSchoolConfigurationIssues({
+    ...validSchool(), timezone: '', studentLimit: null, releaseEnabled: null,
+    pickupLatitude: null, pickupLongitude: null, pickupRadiusMeters: null,
+    pickupRequestLifetimeMinutes: null,
+  }, { isValidStudentLimit: (value) => value === 300, allowZeroRadiusWhenDisabled: true });
+  const fields = new Set(issues.map((issue) => issue.field));
+  for (const field of ['timezone', 'studentLimit', 'releaseEnabled', 'pickupLatitude', 'pickupLongitude', 'pickupRadiusMeters', 'pickupRequestLifetimeMinutes']) {
+    assert.ok(fields.has(field), 'missing issue for ' + field);
+  }
 });

@@ -5,7 +5,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { getAdminDb } from '@/lib/firebase-admin';
 import { requirePlatformAdmin } from '@/lib/platform-auth';
 import { createManualStudentCapacity, parseManualStudentLimit } from '@/lib/student-capacity.mjs';
-import { getSchoolConfigurationIssues, serializeManageSchool } from '@/lib/school-update';
+import { getIanaTimezoneOptions, getSchoolConfigurationIssues, serializeManageSchool } from '@/lib/school-update';
 
 const CSRF_COOKIE = 's2g_csrf';
 
@@ -188,6 +188,7 @@ export async function GET() {
     return json({
       ok: true,
       schools,
+      timezoneOptions: getIanaTimezoneOptions(),
     });
   } catch {
     return json(

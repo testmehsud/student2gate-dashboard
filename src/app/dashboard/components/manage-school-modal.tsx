@@ -1,8 +1,9 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
-import { MANUAL_STUDENT_CAPACITY_OPTIONS } from '@/lib/student-capacity.mjs';
-import { buildManageSchoolPatch, getManageSchoolInitialName, SCHOOL_FIELD_LABELS } from '@/lib/school-update';
+import { FormEvent, useMemo, useRef, useState } from 'react';
+import { MANUAL_STUDENT_CAPACITY_OPTIONS, parseManualStudentLimit, validateManualStudentCapacity } from '@/lib/student-capacity.mjs';
+import { buildManageSchoolPatch, filterIanaTimezoneOptions, getManageSchoolInitialName, getManageSchoolInitialReleaseEnabled, getManageSchoolInitialTimezone, getSchoolConfigurationIssues, parseManageSchoolFormValues, SCHOOL_FIELD_LABELS } from '@/lib/school-update';
+import IanaTimezoneCombobox from './iana-timezone-combobox';
 import type { SchoolConfigurationIssue } from '@/lib/school-update';
 
 type ManageSchool = {
@@ -23,106 +24,131 @@ type ManageSchool = {
   studentCount?: number;
   configurationIssues?: SchoolConfigurationIssue[];
 };
+type SchoolFieldValues = Record<string, unknown>;
 
 export default function ManageSchoolModal({
   school,
+  timezoneOptions,
   onClose,
   onUpdated,
 }: {
   school: ManageSchool;
+  timezoneOptions: string[];
   onClose: () => void;
   onUpdated: (school: ManageSchool) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [fieldIssues, setFieldIssues] = useState<SchoolConfigurationIssue[]>(school.configurationIssues ?? []);
-  const [releaseEnabledValue, setReleaseEnabledValue] = useState(() => school.releaseEnabled === null ? '' : String(school.releaseEnabled));
+  const [releaseEnabledValue, setReleaseEnabledValue] = useState(() => getManageSchoolInitialReleaseEnabled(school.releaseEnabled));
   const [name, setName] = useState(() => getManageSchoolInitialName(school));
+  const initialTimezone = getManageSchoolInitialTimezone(school);
+  const [timezone, setTimezone] = useState(initialTimezone);
+  const [pickupLatitude, setPickupLatitude] = useState(() => school.pickupLatitude?.toString() ?? '');
+  const [pickupLongitude, setPickupLongitude] = useState(() => school.pickupLongitude?.toString() ?? '');
+  const [pickupRadiusMeters, setPickupRadiusMeters] = useState(() => school.pickupRadiusMeters?.toString() ?? '');
+  const summaryRef = useRef<HTMLDivElement>(null);
+  const fieldElements = useRef<Record<string, HTMLElement | null>>({});
+  const selectableTimezones = useMemo(() => {
+    const options = [...timezoneOptions];
+    if (initialTimezone && !options.includes(initialTimezone)) options.push(initialTimezone);
+    return filterIanaTimezoneOptions(options, '');
+  }, [timezoneOptions, initialTimezone]);
+
+  function clearFieldIssue(field: string) {
+    setFieldIssues((current) => current.filter((issue) => issue.field !== field));
+  }
+
+  function issuesFor(field: string) {
+    return fieldIssues.filter((issue) => issue.field === field);
+  }
+
+  function fieldError(field: string) {
+    const issues = issuesFor(field);
+    if (issues.length === 0) return null;
+    return (
+      <ul id={field + '-error'} className="mt-1 space-y-1 text-sm text-red-700">
+        {issues.map((issue) => <li key={issue.code}>{issue.message}</li>)}
+      </ul>
+    );
+  }
+
+  function focusFirstIssue(issues: SchoolConfigurationIssue[]) {
+    const firstControlIssue = issues.find((issue) => fieldElements.current[issue.field]);
+    window.requestAnimationFrame(() => {
+      const target = firstControlIssue ? fieldElements.current[firstControlIssue.field] : summaryRef.current;
+      target?.focus();
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
 
   async function request(
-    action:
-      | 'update'
-      | 'deactivate'
-      | 'reactivate'
-      | 'archive',
+    action: 'update' | 'deactivate' | 'reactivate' | 'archive',
     form?: HTMLFormElement,
   ) {
     if (busy) return;
+
+    let submittedValues: SchoolFieldValues | null = null;
+    if (action === 'update' && form) {
+      submittedValues = parseManageSchoolFormValues(Object.fromEntries(new FormData(form).entries()));
+      const issues = getSchoolConfigurationIssues(
+        { ...school, ...submittedValues },
+        {
+          isValidStudentLimit: (value) => parseManualStudentLimit(value) !== null,
+          allowZeroRadiusWhenDisabled: true,
+          expectedSchoolId: school.schoolId,
+        },
+      );
+      const requestedLimit = parseManualStudentLimit(submittedValues.studentLimit);
+      const activeCount = school.activeStudentCount ?? school.studentCount;
+      if (requestedLimit !== null && Number.isSafeInteger(activeCount) && !validateManualStudentCapacity(requestedLimit, activeCount).ok) {
+        issues.push({
+          field: 'studentLimit',
+          code: 'below_active_student_count',
+          message: 'Choose a limit that is at least the current active student count (' + activeCount + ').',
+        });
+      }
+      if (issues.length > 0) {
+        setError('');
+        setFieldIssues(issues);
+        focusFirstIssue(issues);
+        return;
+      }
+      setFieldIssues([]);
+    }
 
     setBusy(true);
     setError('');
 
     try {
-      const csrfResponse = await fetch('/api/auth/csrf', {
-        credentials: 'same-origin',
-        cache: 'no-store',
-      });
-
-      const csrfResult =
-        await csrfResponse.json().catch(() => null);
-
-      if (
-        !csrfResponse.ok ||
-        typeof csrfResult?.token !== 'string'
-      ) {
-        throw new Error(
-          'Unable to start secure school management.',
-        );
+      const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' });
+      const csrfResult = await csrfResponse.json().catch(() => null);
+      if (!csrfResponse.ok || typeof csrfResult?.token !== 'string') {
+        throw new Error('Unable to start secure school management.');
       }
 
-      const body: Record<string, unknown> = {
-        csrfToken: csrfResult.token,
-        action,
-      };
-
-      if (action === 'update' && form) {
-        const data = new FormData(form);
-
-        const numberValue = (field: string) => {
-          const raw = String(data.get(field) ?? '').trim();
-          return raw === '' ? null : Number(raw);
-        };
-
-        const releaseEnabledRaw = String(data.get('releaseEnabled') ?? '');
-        Object.assign(
-          body,
-          buildManageSchoolPatch(school, {
-            name: name.trim(),
-            city: String(data.get('city') ?? '').trim(),
-            timezone: String(data.get('timezone') ?? '').trim(),
-            releaseEnabled: releaseEnabledRaw === '' ? null : releaseEnabledRaw === 'true',
-            pickupLatitude: numberValue('pickupLatitude'),
-            pickupLongitude: numberValue('pickupLongitude'),
-            pickupRadiusMeters: numberValue('pickupRadiusMeters'),
-            pickupRequestLifetimeMinutes: numberValue('pickupRequestLifetimeMinutes'),
-            pickupReleaseMinutesBeforeBell: numberValue('pickupReleaseMinutesBeforeBell'),
-            pickupSessionDurationMinutes: numberValue('pickupSessionDurationMinutes'),
-            studentLimit: numberValue('studentLimit'),
-          }),
-        );
+      const body: Record<string, unknown> = { csrfToken: csrfResult.token, action };
+      if (action === 'update' && submittedValues) {
+        Object.assign(body, buildManageSchoolPatch(school, submittedValues));
       }
 
       const response = await fetch(
-        `/api/platform/schools/${encodeURIComponent(
-          school.schoolId,
-        )}`,
+        '/api/platform/schools/' + encodeURIComponent(school.schoolId),
         {
           method: 'PATCH',
           credentials: 'same-origin',
-          headers: {
-            'Content-Type':
-              'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         },
       );
-
-      const result =
-        await response.json().catch(() => null);
+      const result = await response.json().catch(() => null);
 
       if (!response.ok) {
         if (Array.isArray(result?.issues)) {
-          setFieldIssues(result.issues as SchoolConfigurationIssue[]);
+          const issues = result.issues as SchoolConfigurationIssue[];
+          setFieldIssues(issues);
+          focusFirstIssue(issues);
+          if (result.error === 'invalid_school' || result.error === 'invalid_student_capacity') return;
         }
         throw new Error(
           typeof result?.message === 'string'
@@ -133,21 +159,10 @@ export default function ManageSchoolModal({
         );
       }
 
-      if (!result?.school) {
-        throw new Error(
-          'No school data was returned.',
-        );
-      }
-
-      onUpdated(
-        result.school as ManageSchool,
-      );
+      if (!result?.school) throw new Error('No school data was returned.');
+      onUpdated(result.school as ManageSchool);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to update school.',
-      );
+      setError(err instanceof Error ? err.message : 'Unable to update school.');
     } finally {
       setBusy(false);
     }
@@ -203,6 +218,7 @@ export default function ManageSchoolModal({
         </div>
 
         <form
+          noValidate
           onSubmit={(
             event: FormEvent<HTMLFormElement>,
           ) => {
@@ -215,11 +231,11 @@ export default function ManageSchoolModal({
           className="space-y-6 p-6"
         >
           {fieldIssues.length > 0 && (
-            <div role="alert" aria-live="polite" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <div ref={summaryRef} tabIndex={-1} role="alert" aria-live="polite" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <p className="font-semibold">Correct these school settings before saving:</p>
               <ul className="mt-2 list-disc space-y-1 pl-5">
                 {fieldIssues.map((issue) => (
-                  <li key={issue.field}><strong>{SCHOOL_FIELD_LABELS[issue.field] ?? issue.field}:</strong> {issue.message}</li>
+                  <li key={issue.field + '-' + issue.code}><strong>{SCHOOL_FIELD_LABELS[issue.field] ?? issue.field}:</strong> {issue.message}</li>
                 ))}
               </ul>
             </div>
@@ -242,9 +258,13 @@ export default function ManageSchoolModal({
                 </span>
 
                 <input
+                  id="name"
                   name="name"
+                  ref={(element) => { fieldElements.current.name = element; }}
                   value={name}
-                  onChange={(event) => setName(event.target.value)}
+                  onChange={(event) => { setName(event.target.value); clearFieldIssue('name'); }}
+                  aria-invalid={issuesFor('name').length > 0}
+                  aria-describedby={issuesFor('name').length > 0 ? 'name-error' : undefined}
                   required
                   maxLength={200}
                   disabled={
@@ -252,41 +272,50 @@ export default function ManageSchoolModal({
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
                 />
+                {fieldError('name')}
               </label>
 
               <label className="block">
                 <span className="mb-1 block text-sm font-medium text-slate-700">
-                  City
+                  City <span className="ml-1 text-slate-400">optional</span>
                 </span>
 
                 <input
+                  id="city"
                   name="city"
+                  ref={(element) => { fieldElements.current.city = element; }}
                   defaultValue={school.city}
+                  onChange={() => clearFieldIssue('city')}
+                  aria-invalid={issuesFor('city').length > 0}
+                  aria-describedby={issuesFor('city').length > 0 ? 'city-error' : undefined}
                   maxLength={100}
                   disabled={
                     archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
                 />
+                {fieldError('city')}
               </label>
 
-              <label className="block md:col-span-2">
-                <span className="mb-1 block text-sm font-medium text-slate-700">
-                  Timezone
-                </span>
-
-                <input
+              <div className="block md:col-span-2">
+                <label htmlFor="timezone" className="mb-1 block text-sm font-medium text-slate-700">Timezone</label>
+                <IanaTimezoneCombobox
+                  id="timezone"
                   name="timezone"
-                  defaultValue={
-                    school.timezone ?? ''
-                  }
+                  value={timezone}
+                  options={selectableTimezones}
                   required
-                  disabled={
-                    archived || invalidStatus || busy
-                  }
-                  className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                  disabled={archived || invalidStatus || busy}
+                  invalid={issuesFor('timezone').length > 0}
+                  describedBy={'timezone-help' + (issuesFor('timezone').length > 0 ? ' timezone-error' : '')}
+                  inputRef={(element) => { fieldElements.current.timezone = element; }}
+                  onChange={(value) => { setTimezone(value); clearFieldIssue('timezone'); }}
                 />
-              </label>
+                <p id="timezone-help" className="mt-2 text-sm text-slate-500">Search the server-validated IANA list, or type to filter and use the arrow keys and Enter. Asia/Karachi is pinned at the top; the selected identifier is saved as shown.</p>
+                {initialTimezone === '' && <p role="status" className="mt-2 text-sm text-amber-800">The saved timezone is missing or invalid. Choose a timezone to repair it; no timezone has been preselected.</p>}
+                {selectableTimezones.length === 0 && <p role="status" className="mt-2 text-sm text-amber-800">Timezone options are unavailable. Refresh the school list before repairing this school.</p>}
+                {fieldError('timezone')}
+              </div>
             </div>
           </section>
 
@@ -297,13 +326,14 @@ export default function ManageSchoolModal({
             {school.studentLimit === null && <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">Student capacity is not configured. Set it here before School Admins add students.</p>}
             <label className="block max-w-md">
               <span className="mb-1 block text-sm font-medium text-slate-700">Maximum active students</span>
-              <select name="studentLimit" defaultValue={school.studentLimit?.toString() ?? ''} required disabled={archived || invalidStatus || busy} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+              <select id="studentLimit" name="studentLimit" ref={(element) => { fieldElements.current.studentLimit = element; }} defaultValue={school.studentLimit?.toString() ?? ''} onChange={() => clearFieldIssue('studentLimit')} aria-invalid={issuesFor('studentLimit').length > 0} aria-describedby={issuesFor('studentLimit').length > 0 ? 'studentLimit-error' : undefined} required disabled={archived || invalidStatus || busy} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
                 <option value="" disabled>Choose a capacity</option>
                 {MANUAL_STUDENT_CAPACITY_OPTIONS.map((capacity) => (
                   <option key={capacity} value={capacity}>{capacity.toLocaleString()} students</option>
                 ))}
               </select>
-              <span className="mt-2 block text-sm text-slate-500">School-wide active-student limit. Current active count: {(school.activeStudentCount ?? school.studentCount ?? 0).toLocaleString()}.</span>
+              <span className="mt-2 block text-sm text-slate-500">Approved choices: 100 to 1,000 in 100-student steps. School-wide active-student limit. Current active count: {Number.isSafeInteger(school.activeStudentCount ?? school.studentCount) ? (school.activeStudentCount ?? school.studentCount)?.toLocaleString() : 'checked securely when saved'}.</span>
+              {fieldError('studentLimit')}
             </label>
           </section>
 
@@ -324,15 +354,20 @@ export default function ManageSchoolModal({
                   step="any"
                   min="-90"
                   max="90"
-                  defaultValue={
-                    school.pickupLatitude ?? ''
-                  }
+                  id="pickupLatitude"
+                  ref={(element) => { fieldElements.current.pickupLatitude = element; }}
+                  value={pickupLatitude}
+                  onChange={(event) => { setPickupLatitude(event.target.value); clearFieldIssue('pickupLatitude'); }}
+                  aria-invalid={issuesFor('pickupLatitude').length > 0}
+                  aria-describedby={issuesFor('pickupLatitude').length > 0 ? 'pickupLatitude-error' : undefined}
                   required
                   disabled={
                     archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
+                <span className="mt-1 block text-xs text-slate-500">Range: minus 90 to 90. Enter the real pickup latitude when release is enabled.</span>
+                {fieldError('pickupLatitude')}
               </label>
 
               <label className="block">
@@ -346,15 +381,20 @@ export default function ManageSchoolModal({
                   step="any"
                   min="-180"
                   max="180"
-                  defaultValue={
-                    school.pickupLongitude ?? ''
-                  }
+                  id="pickupLongitude"
+                  ref={(element) => { fieldElements.current.pickupLongitude = element; }}
+                  value={pickupLongitude}
+                  onChange={(event) => { setPickupLongitude(event.target.value); clearFieldIssue('pickupLongitude'); }}
+                  aria-invalid={issuesFor('pickupLongitude').length > 0}
+                  aria-describedby={issuesFor('pickupLongitude').length > 0 ? 'pickupLongitude-error' : undefined}
                   required
                   disabled={
                     archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
+                <span className="mt-1 block text-xs text-slate-500">Range: minus 180 to 180. Enter the real pickup longitude when release is enabled.</span>
+                {fieldError('pickupLongitude')}
               </label>
 
               <label className="block">
@@ -367,17 +407,28 @@ export default function ManageSchoolModal({
                   type="number"
                   min={releaseEnabledValue === 'false' ? 0 : 1}
                   max="5000"
-                  defaultValue={
-                    school.pickupRadiusMeters ?? ''
-                  }
+                  id="pickupRadiusMeters"
+                  ref={(element) => { fieldElements.current.pickupRadiusMeters = element; }}
+                  value={pickupRadiusMeters}
+                  onChange={(event) => { setPickupRadiusMeters(event.target.value); clearFieldIssue('pickupRadiusMeters'); }}
+                  aria-invalid={issuesFor('pickupRadiusMeters').length > 0}
+                  aria-describedby={issuesFor('pickupRadiusMeters').length > 0 ? 'pickupRadiusMeters-error' : undefined}
                   required
                   disabled={
                     archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
+                <span className="mt-1 block text-xs text-slate-500">{releaseEnabledValue === 'false' ? 'Range: 0 to 5,000 m while disabled.' : 'Range: 1 to 5,000 m while enabled.'}</span>
+                {fieldError('pickupRadiusMeters')}
               </label>
             </div>
+            {releaseEnabledValue === 'false' && (
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                <p>With pickup release disabled, the existing Worker setup uses 0, 0 coordinates and a 0 m radius as inactive sentinels. This is not a real school location.</p>
+                <button type="button" disabled={busy || archived || invalidStatus} onClick={() => { setPickupLatitude('0'); setPickupLongitude('0'); setPickupRadiusMeters('0'); clearFieldIssue('pickupLatitude'); clearFieldIssue('pickupLongitude'); clearFieldIssue('pickupRadiusMeters'); }} className="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100">Use disabled-release values (0, 0; 0 m)</button>
+              </div>
+            )}
           </section>
 
           <section>
@@ -392,7 +443,9 @@ export default function ManageSchoolModal({
                 </span>
 
                 <input
+                  id="pickupRequestLifetimeMinutes"
                   name="pickupRequestLifetimeMinutes"
+                  ref={(element) => { fieldElements.current.pickupRequestLifetimeMinutes = element; }}
                   type="number"
                   min="1"
                   max="180"
@@ -401,11 +454,16 @@ export default function ManageSchoolModal({
                     ''
                   }
                   required
+                  onChange={() => clearFieldIssue('pickupRequestLifetimeMinutes')}
+                  aria-invalid={issuesFor('pickupRequestLifetimeMinutes').length > 0}
+                  aria-describedby={issuesFor('pickupRequestLifetimeMinutes').length > 0 ? 'pickupRequestLifetimeMinutes-error' : undefined}
                   disabled={
                     archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
+                <span className="mt-1 block text-xs text-slate-500">Whole number from 1 to 180 minutes.</span>
+                {fieldError('pickupRequestLifetimeMinutes')}
               </label>
 
               <label className="block">
@@ -415,19 +473,25 @@ export default function ManageSchoolModal({
                 <span className="mt-1 block text-xs text-slate-500">Optional. If unset, the Worker uses its configured 5-minute default.</span>
 
                 <input
+                  id="pickupReleaseMinutesBeforeBell"
                   name="pickupReleaseMinutesBeforeBell"
+                  ref={(element) => { fieldElements.current.pickupReleaseMinutesBeforeBell = element; }}
                   type="number"
-                  min="0"
+                  min="1"
                   max="60"
                   defaultValue={
                     school.pickupReleaseMinutesBeforeBell ??
                     ''
                   }
+                  onChange={() => clearFieldIssue('pickupReleaseMinutesBeforeBell')}
+                  aria-invalid={issuesFor('pickupReleaseMinutesBeforeBell').length > 0}
+                  aria-describedby={issuesFor('pickupReleaseMinutesBeforeBell').length > 0 ? 'pickupReleaseMinutesBeforeBell-error' : undefined}
                   disabled={
                     archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
+                {fieldError('pickupReleaseMinutesBeforeBell')}
               </label>
 
               <label className="block">
@@ -437,7 +501,9 @@ export default function ManageSchoolModal({
                 <span className="mt-1 block text-xs text-slate-500">Optional. If unset, the Worker uses its configured 30-minute default.</span>
 
                 <input
+                  id="pickupSessionDurationMinutes"
                   name="pickupSessionDurationMinutes"
+                  ref={(element) => { fieldElements.current.pickupSessionDurationMinutes = element; }}
                   type="number"
                   min="1"
                   max="240"
@@ -445,11 +511,15 @@ export default function ManageSchoolModal({
                     school.pickupSessionDurationMinutes ??
                     ''
                   }
+                  onChange={() => clearFieldIssue('pickupSessionDurationMinutes')}
+                  aria-invalid={issuesFor('pickupSessionDurationMinutes').length > 0}
+                  aria-describedby={issuesFor('pickupSessionDurationMinutes').length > 0 ? 'pickupSessionDurationMinutes-error' : undefined}
                   disabled={
                     archived || invalidStatus || busy
                   }
                   className="w-full rounded-xl border border-slate-300 px-4 py-3"
                 />
+                {fieldError('pickupSessionDurationMinutes')}
               </label>
             </div>
           </section>
@@ -459,9 +529,13 @@ export default function ManageSchoolModal({
               Pickup release enabled
             </span>
             <select
+              id="releaseEnabled"
               name="releaseEnabled"
+              ref={(element) => { fieldElements.current.releaseEnabled = element; }}
               value={releaseEnabledValue}
-              onChange={(event) => setReleaseEnabledValue(event.target.value)}
+              onChange={(event) => { setReleaseEnabledValue(event.target.value); clearFieldIssue('releaseEnabled'); }}
+              aria-invalid={issuesFor('releaseEnabled').length > 0}
+              aria-describedby={issuesFor('releaseEnabled').length > 0 ? 'releaseEnabled-error' : undefined}
               required
               disabled={archived || invalidStatus || busy}
               className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3"
@@ -471,8 +545,9 @@ export default function ManageSchoolModal({
               <option value="false">Disabled</option>
             </select>
             <span className="mt-2 block text-xs text-slate-500">
-              The radius is used only while pickup release is enabled. When enabled, choose a radius from 1 to 5,000 meters.
+              When enabled, enter the real school pickup coordinates and choose a radius from 1 to 5,000 meters. Disabled-release sentinel coordinates cannot be used while enabled.
             </span>
+            {fieldError('releaseEnabled')}
           </label>
 
           {error && (
